@@ -35,9 +35,8 @@ module orderbookmodule::orders {
     struct Orderbook has key, store {
         id: UID,
         orders: Table<ID, OrderbookEntry>,
-        limits: Table<ID, Limit>,
-        bid_limits: VecSet<ID>,
-        ask_limits: VecSet<ID>,
+        bid_limits: Table<ID, Limit>,
+        ask_limits: Table<ID, Limit>,
     }
 
     fun init(ctx: &mut TxContext) {
@@ -56,9 +55,8 @@ module orderbookmodule::orders {
         transfer::share_object(Orderbook{
             id, 
             orders: table::new<ID, OrderbookEntry>(ctx),
-            limits: table::new<ID, Limit>(ctx),
-            bid_limits: vec_set::empty(), 
-            ask_limits: vec_set::empty(), 
+            bid_limits: table::new<ID, Limit>(ctx),
+            ask_limits: table::new<ID, Limit>(ctx),
         })
     }
 
@@ -66,9 +64,9 @@ module orderbookmodule::orders {
         let base_limit = create_limit(price, ctx);
         let order = create_order(price, is_by_side, initial_quantity, current_quantity, user, ctx);
         if(order.is_by_side) {
-            add_order_to_orderbook(order, base_limit, orderBook.bid_limits,orderBook, ctx);
+            add_bid_order_to_orderbook(order, base_limit, orderBook, ctx);
         } else {
-            add_order_to_orderbook(order, base_limit, orderBook.ask_limits,orderBook, ctx);
+            add_ask_order_to_orderbook(order, base_limit, orderBook, ctx);
         }
     }
 
@@ -102,8 +100,8 @@ module orderbookmodule::orders {
         }
     }
 
-    fun add_order_to_orderbook(order: Order, limit: Limit, limit_levels: VecSet<ID>, orderBook: &mut Orderbook, ctx: &mut TxContext) {
-        if(vec_set::contains(&limit_levels, &object::id(&limit))) {
+    fun add_bid_order_to_orderbook(order: Order, limit: Limit, orderBook: &mut Orderbook, ctx: &mut TxContext) {
+        if(table::contains(&orderBook.bid_limits, object::id(&limit))) {
             let new_entry = create_new_entry(order, object::id(&limit), ctx);
             if(option::is_none(&limit.tail)) {
                 limit.head = option::some(object::id(&new_entry));
@@ -126,7 +124,36 @@ module orderbookmodule::orders {
             let new_entry = create_new_entry(order, object::id(&limit), ctx);
             limit.head = option::some(object::id(&new_entry));
             limit.tail = option::some(object::id(&new_entry));
-            table::add(&mut orderBook.limits, object::id(&limit), limit);
+            table::add(&mut orderBook.bid_limits, object::id(&limit), limit);
+            table::add(&mut orderBook.orders, object::id(&new_entry), new_entry);
+        };
+    }
+
+    fun add_ask_order_to_orderbook(order: Order, limit: Limit, orderBook: &mut Orderbook, ctx: &mut TxContext) {
+        if(table::contains(&orderBook.ask_limits, object::id(&limit))) {
+            let new_entry = create_new_entry(order, object::id(&limit), ctx);
+            if(option::is_none(&limit.tail)) {
+                limit.head = option::some(object::id(&new_entry));
+                limit.tail = option::some(object::id(&new_entry));
+            } else {
+                let tail_proxy = table::borrow_mut(&mut orderBook.orders, *option::borrow(&limit.tail));
+                new_entry.previous = option::some(object::id(tail_proxy));
+                tail_proxy.next = option::some(object::id(&new_entry));
+                limit.tail = option::some(object::id(&new_entry));
+            };
+            table::add(&mut orderBook.orders, object::id(&new_entry), new_entry);
+             let Limit {
+                id,
+                price: _,
+                head: _,
+                tail: _,
+            } = limit;
+            object::delete(id)
+        } else {
+            let new_entry = create_new_entry(order, object::id(&limit), ctx);
+            limit.head = option::some(object::id(&new_entry));
+            limit.tail = option::some(object::id(&new_entry));
+            table::add(&mut orderBook.ask_limits, object::id(&limit), limit);
             table::add(&mut orderBook.orders, object::id(&new_entry), new_entry);
         };
     }
