@@ -12,6 +12,7 @@ module orderbookmodule::orders {
     struct OrderbookEntry has key, store {
         id: UID,
         current: Order,
+        is_by_side: bool,
         parent_limit: ID,
         next: Option<ID>, // OrderbookEntry
         previous: Option<ID> // OrderbookEntry
@@ -65,14 +66,144 @@ module orderbookmodule::orders {
         })
     }
 
-    public entry fun add_bid_order<AssetA, AssetB>(price: u64, is_by_side: bool, initial_quantity: u64, current_quantity: u64, user: address, orderBook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetA>,ctx: &mut TxContext) {
+    // need to handle initial quantity
+    public entry fun add_bid_order<AssetA, AssetB>(price: u64, user: address, orderBook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetA>,ctx: &mut TxContext) {
         let base_limit = create_limit(price, ctx);
-        let order = create_order(price, is_by_side, initial_quantity, current_quantity, user, ctx);
+        
+        let asset_a_balance = coin::into_balance(coin);
+        let asset_a_value = balance::value(&asset_a_balance);
+        // get user from ctx
+        let order = create_order(price, true, asset_a_value, asset_a_value, user, ctx);
         
         let balance = borrow_mut_account_balance<AssetA>(&mut orderBook.asset_a, tx_context::sender(ctx));
-        balance::join(balance, coin::into_balance(coin));
-        add_bid_order_to_orderbook(order, base_limit, orderBook, ctx);
+        balance::join(balance, asset_a_balance);
+        
+        add_bid_order_to_orderbook(order, base_limit, orderBook, true, ctx);
     }
+
+    public entry fun remove_order_from_order_book<AssetA, AssetB>(orderbookEntry: OrderbookEntry,  orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+        if(table::contains(&orderBook.orders, object::id(&orderbookEntry))) {
+            let refund_quantity = orderbookEntry.current.current_quantity;
+            let is_by_side = orderbookEntry.is_by_side;
+            remove_order(orderbookEntry, orderBook, is_by_side);
+
+            let sender = tx_context::sender(ctx);
+            if(is_by_side) { 
+                let user_balance = table::borrow_mut(&mut orderBook.asset_a, sender);
+                let refund = coin::take(user_balance, refund_quantity, ctx);
+                transfer::public_transfer(refund, sender);
+            } else {
+                let user_balance = table::borrow_mut(&mut orderBook.asset_b, sender);
+                let refund = coin::take(user_balance, refund_quantity, ctx);
+                transfer::public_transfer(refund, sender);
+            }; 
+        } else {
+           remove_order_from_store(orderbookEntry);
+        }
+    }
+
+    fun remove_order_from_store(orderbookEntry: OrderbookEntry){
+        let OrderbookEntry {
+                    id,
+                    current,
+                    is_by_side: _,
+                    parent_limit: _,
+                    next: _,
+                    previous: _,
+                } = orderbookEntry;
+                object::delete(id);
+                
+                let Order {
+                    id,
+                    price: _,
+                    is_by_side: _,
+                    initial_quantity: _,
+                    current_quantity: _,
+                    user: _,
+                } = current;
+                object::delete(id);
+    }
+
+    fun remove_parent_limit_from_store(limit: Limit) {
+        let Limit {
+                        id,
+                        price: _,
+                        head: _,
+                        tail: _,
+                    } = limit;
+         object::delete(id)            
+    }
+
+    fun remove_order<AssetA, AssetB>(orderbookEntry: OrderbookEntry, orderBook: &mut Orderbook<AssetA, AssetB>,  is_by_side: bool) {
+        // 1. Deal with location of OrderbookEntry within the linked list.
+        if(option::is_some(&orderbookEntry.previous) && option::is_some(&orderbookEntry.next)) {
+            let next_id = option::borrow(&orderbookEntry.next);
+            let previous_id = option::borrow(&orderbookEntry.previous);
+
+            let next = table::borrow_mut(&mut orderBook.orders, *next_id);
+            next.previous = orderbookEntry.previous;
+
+            let previous = table::borrow_mut(&mut orderBook.orders, *previous_id);
+            previous.next = orderbookEntry.next;
+        } else if(option::is_some(&orderbookEntry.previous)) {
+            let previous_id = option::borrow(&orderbookEntry.previous);
+            let previous = table::borrow_mut(&mut orderBook.orders, *previous_id);
+            previous.next = option::none();
+        } else if(option::is_some(&orderbookEntry.next)) {
+            let next_id = option::borrow(&orderbookEntry.next);
+            let next = table::borrow_mut(&mut orderBook.orders, *next_id);
+             next.previous = option::none();
+        };
+
+        // 2. Deal with OrderbookEntry on the Limit-level
+        if(is_by_side) {
+            deal_with_limit(&mut orderBook.bid_limits, orderbookEntry);
+        } else {
+            deal_with_limit(&mut orderBook.ask_limits, orderbookEntry);
+        };
+    }
+
+    fun deal_with_limit(limits: &mut Table<ID, Limit>, orderbookEntry: OrderbookEntry) {
+        let parent_limit = table::borrow_mut(limits, orderbookEntry.parent_limit);
+
+            if(option::is_some(&parent_limit.head) && option::is_some(&parent_limit.tail)) {
+                let parent_limit_head_id = option::borrow(&parent_limit.head);
+                let parent_limit_tail_id = option::borrow(&parent_limit.tail);
+
+                if(*parent_limit_head_id == object::id(&orderbookEntry) && *parent_limit_tail_id == object::id(&orderbookEntry)) {
+                    parent_limit.head = option::none();
+                    parent_limit.tail = option::none();
+
+                    let parent_limit_to_delete = table::remove(limits, orderbookEntry.parent_limit);
+                    remove_parent_limit_from_store(parent_limit_to_delete);
+                } else if(*parent_limit_head_id == object::id(&orderbookEntry)) {
+                    parent_limit.head = orderbookEntry.next;
+                } else if(*parent_limit_tail_id == object::id(&orderbookEntry)) {
+                    parent_limit.tail = orderbookEntry.previous;
+                };
+
+                remove_order_from_store(orderbookEntry);
+            } else {
+                 remove_order_from_store(orderbookEntry);
+            };
+    }
+
+    public entry fun add_ask_order<AssetA, AssetB>(price: u64, orderBook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetB>,ctx: &mut TxContext) {
+        let sender = tx_context::sender(ctx);
+        let base_limit = create_limit(price, ctx);
+
+        let asset_b_balance = coin::into_balance(coin);
+        let asset_b_value = balance::value(&asset_b_balance);
+
+        let balance = borrow_mut_account_balance<AssetB>(&mut orderBook.asset_b, sender);
+        balance::join(balance, asset_b_balance);
+        
+
+        let order = create_order(price, false, asset_b_value, asset_b_value, sender, ctx);
+        
+        add_ask_order_to_orderbook(order, base_limit, orderBook, false, ctx);
+    }
+
 
     fun borrow_mut_account_balance<T>(
         asset: &mut Table<address, Balance<T>>,
@@ -88,13 +219,6 @@ module orderbookmodule::orders {
 
         table::borrow_mut(asset, user)
     }
-
-    // public entry fun add_ask_order<AssetA, AssetB>(price: u64, is_by_side: bool, initial_quantity: u64, current_quantity: u64, user: address, orderBook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetB>,ctx: &mut TxContext) {
-    //     let base_limit = create_limit(price, ctx);
-    //     let order = create_order(price, is_by_side, initial_quantity, current_quantity, user, ctx);
-        
-    //     add_ask_order_to_orderbook(order, base_limit, orderBook, ctx);
-    // }
 
     fun create_limit(price: u64, ctx: &mut TxContext): Limit {
         Limit {
@@ -116,9 +240,10 @@ module orderbookmodule::orders {
         }
     }
 
-    fun create_new_entry(order: Order, limit_id: ID, ctx: &mut TxContext): OrderbookEntry {
+    fun create_new_entry(order: Order, limit_id: ID, is_by_side: bool, ctx: &mut TxContext): OrderbookEntry {
         OrderbookEntry {
             id: object::new(ctx),
+            is_by_side,
             current: order,
             parent_limit: limit_id,
             next: option::none(),
@@ -126,9 +251,9 @@ module orderbookmodule::orders {
         }
     }
 
-    fun add_bid_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+    fun add_bid_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderBook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, ctx: &mut TxContext) {
         if(table::contains(&orderBook.bid_limits, object::id(&limit))) {
-            let new_entry = create_new_entry(order, object::id(&limit), ctx);
+            let new_entry = create_new_entry(order, object::id(&limit), is_by_side, ctx);
             if(option::is_none(&limit.tail)) {
                 limit.head = option::some(object::id(&new_entry));
                 limit.tail = option::some(object::id(&new_entry));
@@ -147,7 +272,7 @@ module orderbookmodule::orders {
             } = limit;
             object::delete(id)
         } else {
-            let new_entry = create_new_entry(order, object::id(&limit), ctx);
+            let new_entry = create_new_entry(order, object::id(&limit),is_by_side, ctx);
             limit.head = option::some(object::id(&new_entry));
             limit.tail = option::some(object::id(&new_entry));
             table::add(&mut orderBook.bid_limits, object::id(&limit), limit);
@@ -155,9 +280,9 @@ module orderbookmodule::orders {
         };
     }
 
-    fun add_ask_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+    fun add_ask_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderBook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, ctx: &mut TxContext) {
         if(table::contains(&orderBook.ask_limits, object::id(&limit))) {
-            let new_entry = create_new_entry(order, object::id(&limit), ctx);
+            let new_entry = create_new_entry(order, object::id(&limit),is_by_side, ctx);
             if(option::is_none(&limit.tail)) {
                 limit.head = option::some(object::id(&new_entry));
                 limit.tail = option::some(object::id(&new_entry));
@@ -176,7 +301,7 @@ module orderbookmodule::orders {
             } = limit;
             object::delete(id)
         } else {
-            let new_entry = create_new_entry(order, object::id(&limit), ctx);
+            let new_entry = create_new_entry(order, object::id(&limit),is_by_side, ctx);
             limit.head = option::some(object::id(&new_entry));
             limit.tail = option::some(object::id(&new_entry));
             table::add(&mut orderBook.ask_limits, object::id(&limit), limit);
