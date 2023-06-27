@@ -2,10 +2,12 @@ module orderbookmodule::orders {
     use sui::transfer;
     use sui::object::{Self, ID, UID};
     use std::option::{Self, Option};
+    use std::vector::{Self};
     use sui::table::{Self, Table};
     use sui::tx_context::{Self, TxContext};
     use sui::balance::{Self, Balance, split};
     use sui::coin::{Self, Coin, join};
+    use sui::transfer::{public_transfer};
 
     struct OrderbookManagerCap has key, store { id: UID }
 
@@ -36,7 +38,8 @@ module orderbookmodule::orders {
 
     struct Orderbook<phantom AssetA, phantom AssetB> has key, store {
         id: UID,
-        orders: Table<ID, OrderbookEntry>,
+        bids: vector<OrderbookEntry>,
+        asks: vector<OrderbookEntry>,
         bid_limits: Table<ID, Limit>,
         ask_limits: Table<ID, Limit>,
         asset_a: Table<address, Balance<AssetA>>,
@@ -58,7 +61,8 @@ module orderbookmodule::orders {
 
         transfer::share_object(Orderbook{
             id, 
-            orders: table::new<ID, OrderbookEntry>(ctx),
+            bids: vector::empty<OrderbookEntry>(),
+            asks: vector::empty<OrderbookEntry>(),
             bid_limits: table::new<ID, Limit>(ctx),
             ask_limits: table::new<ID, Limit>(ctx),
             asset_a: table::new<address, Balance<AssetA>>(ctx),
@@ -73,7 +77,7 @@ module orderbookmodule::orders {
         let asset_a_balance = coin::into_balance(coin);
         let asset_a_value = balance::value(&asset_a_balance);
         // get user from ctx
-        let order = create_order(price, true, asset_a_value, asset_a_value, user, ctx);
+        let order = create_order(price, true, asset_a_value, asset_a_value, tx_context::sender(ctx), ctx);
         
         let balance = borrow_mut_account_balance<AssetA>(&mut orderBook.asset_a, tx_context::sender(ctx));
         balance::join(balance, asset_a_balance);
@@ -82,17 +86,18 @@ module orderbookmodule::orders {
     }
 
     public entry fun remove_order_from_order_book<AssetA, AssetB>(orderbookEntry: OrderbookEntry,  orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
-        if(table::contains(&orderBook.orders, object::id(&orderbookEntry))) {
+        if(vector::contains(&orderBook.bids, &orderbookEntry) || vector::contains(&orderBook.asks, &orderbookEntry)) {
             let refund_quantity = orderbookEntry.current.current_quantity;
             let is_by_side = orderbookEntry.is_by_side;
-            remove_order(orderbookEntry, orderBook, is_by_side);
 
             let sender = tx_context::sender(ctx);
             if(is_by_side) { 
+                remove_bid_order(orderbookEntry, orderBook);
                 let user_balance = table::borrow_mut(&mut orderBook.asset_a, sender);
                 let refund = coin::take(user_balance, refund_quantity, ctx);
                 transfer::public_transfer(refund, sender);
             } else {
+                remove_ask_order(orderbookEntry, orderBook);
                 let user_balance = table::borrow_mut(&mut orderBook.asset_b, sender);
                 let refund = coin::take(user_balance, refund_quantity, ctx);
                 transfer::public_transfer(refund, sender);
@@ -134,33 +139,90 @@ module orderbookmodule::orders {
          object::delete(id)            
     }
 
-    fun remove_order<AssetA, AssetB>(orderbookEntry: OrderbookEntry, orderBook: &mut Orderbook<AssetA, AssetB>,  is_by_side: bool) {
+    fun remove_bid_order<AssetA, AssetB>(orderbookEntry: OrderbookEntry, orderBook: &mut Orderbook<AssetA, AssetB>) {
         // 1. Deal with location of OrderbookEntry within the linked list.
         if(option::is_some(&orderbookEntry.previous) && option::is_some(&orderbookEntry.next)) {
             let next_id = option::borrow(&orderbookEntry.next);
             let previous_id = option::borrow(&orderbookEntry.previous);
 
-            let next = table::borrow_mut(&mut orderBook.orders, *next_id);
-            next.previous = orderbookEntry.previous;
+            let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, next_id);
+            let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, previous_id);
 
-            let previous = table::borrow_mut(&mut orderBook.orders, *previous_id);
-            previous.next = orderbookEntry.next;
+            if(option::is_some(&next_vec_idx)) {
+                let next_idx = option::borrow(&next_vec_idx);
+                let next = vector::borrow_mut(&mut orderBook.bids, *next_idx);
+                next.previous = orderbookEntry.previous;    
+            };
+
+            if(option::is_some(&prev_vec_idx)) {
+                let prev_idx = option::borrow(&prev_vec_idx);
+                let prev = vector::borrow_mut(&mut orderBook.bids, *prev_idx);
+                prev.next = orderbookEntry.next; 
+            };
         } else if(option::is_some(&orderbookEntry.previous)) {
             let previous_id = option::borrow(&orderbookEntry.previous);
-            let previous = table::borrow_mut(&mut orderBook.orders, *previous_id);
-            previous.next = option::none();
+            let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, previous_id);
+
+            if(option::is_some(&prev_vec_idx)) {
+                let prev_idx = option::borrow(&prev_vec_idx);
+                let prev = vector::borrow_mut(&mut orderBook.bids, *prev_idx);
+                prev.next = option::none(); 
+            };
         } else if(option::is_some(&orderbookEntry.next)) {
             let next_id = option::borrow(&orderbookEntry.next);
-            let next = table::borrow_mut(&mut orderBook.orders, *next_id);
-             next.previous = option::none();
+            let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, next_id);
+
+            if(option::is_some(&next_vec_idx)) {
+                let next_idx = option::borrow(&next_vec_idx);
+                let next = vector::borrow_mut(&mut orderBook.bids, *next_idx);
+                next.previous = option::none();    
+            };
         };
 
-        // 2. Deal with OrderbookEntry on the Limit-level
-        if(is_by_side) {
-            deal_with_limit(&mut orderBook.bid_limits, orderbookEntry);
-        } else {
-            deal_with_limit(&mut orderBook.ask_limits, orderbookEntry);
+        deal_with_limit(&mut orderBook.bid_limits, orderbookEntry);
+    }
+
+    fun remove_ask_order<AssetA, AssetB>(orderbookEntry: OrderbookEntry, orderBook: &mut Orderbook<AssetA, AssetB>) {
+        // 1. Deal with location of OrderbookEntry within the linked list.
+        if(option::is_some(&orderbookEntry.previous) && option::is_some(&orderbookEntry.next)) {
+            let next_id = option::borrow(&orderbookEntry.next);
+            let previous_id = option::borrow(&orderbookEntry.previous);
+
+            let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, next_id);
+            let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, previous_id);
+
+            if(option::is_some(&next_vec_idx)) {
+                let next_idx = option::borrow(&next_vec_idx);
+                let next = vector::borrow_mut(&mut orderBook.asks, *next_idx);
+                next.previous = orderbookEntry.previous;    
+            };
+
+            if(option::is_some(&prev_vec_idx)) {
+                let prev_idx = option::borrow(&prev_vec_idx);
+                let prev = vector::borrow_mut(&mut orderBook.asks, *prev_idx);
+                prev.next = orderbookEntry.next; 
+            };
+        } else if(option::is_some(&orderbookEntry.previous)) {
+            let previous_id = option::borrow(&orderbookEntry.previous);
+            let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, previous_id);
+
+            if(option::is_some(&prev_vec_idx)) {
+                let prev_idx = option::borrow(&prev_vec_idx);
+                let prev = vector::borrow_mut(&mut orderBook.asks, *prev_idx);
+                prev.next = option::none(); 
+            };
+        } else if(option::is_some(&orderbookEntry.next)) {
+            let next_id = option::borrow(&orderbookEntry.next);
+            let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, next_id);
+
+            if(option::is_some(&next_vec_idx)) {
+                let next_idx = option::borrow(&next_vec_idx);
+                let next = vector::borrow_mut(&mut orderBook.asks, *next_idx);
+                next.previous = option::none();    
+            };
         };
+
+        deal_with_limit(&mut orderBook.ask_limits, orderbookEntry);
     }
 
     fun deal_with_limit(limits: &mut Table<ID, Limit>, orderbookEntry: OrderbookEntry) {
@@ -189,17 +251,15 @@ module orderbookmodule::orders {
     }
 
     public entry fun add_ask_order<AssetA, AssetB>(price: u64, orderBook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetB>,ctx: &mut TxContext) {
-        let sender = tx_context::sender(ctx);
         let base_limit = create_limit(price, ctx);
 
         let asset_b_balance = coin::into_balance(coin);
         let asset_b_value = balance::value(&asset_b_balance);
 
-        let balance = borrow_mut_account_balance<AssetB>(&mut orderBook.asset_b, sender);
-        balance::join(balance, asset_b_balance);
-        
+        let order = create_order(price, false, asset_b_value, asset_b_value, tx_context::sender(ctx), ctx);
 
-        let order = create_order(price, false, asset_b_value, asset_b_value, sender, ctx);
+        let balance = borrow_mut_account_balance<AssetB>(&mut orderBook.asset_b, tx_context::sender(ctx));
+        balance::join(balance, asset_b_balance);
         
         add_ask_order_to_orderbook(order, base_limit, orderBook, false, ctx);
     }
@@ -258,12 +318,17 @@ module orderbookmodule::orders {
                 limit.head = option::some(object::id(&new_entry));
                 limit.tail = option::some(object::id(&new_entry));
             } else {
-                let tail_proxy = table::borrow_mut(&mut orderBook.orders, *option::borrow(&limit.tail));
-                new_entry.previous = option::some(object::id(tail_proxy));
-                tail_proxy.next = option::some(object::id(&new_entry));
-                limit.tail = option::some(object::id(&new_entry));
+                let tail_proxy_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&limit.tail));
+
+                if(option::is_some(&tail_proxy_vec_idx)) {
+                    let tail_proxy_idx = option::borrow(&tail_proxy_vec_idx);
+                    let tail_proxy = vector::borrow_mut(&mut orderBook.bids, *tail_proxy_idx);
+                    new_entry.previous = option::some(object::id(tail_proxy));
+                    tail_proxy.next = option::some(object::id(&new_entry));
+                    limit.tail = option::some(object::id(&new_entry));
+                }                
             };
-            table::add(&mut orderBook.orders, object::id(&new_entry), new_entry);
+            vector::push_back(&mut orderBook.bids, new_entry);
              let Limit {
                 id,
                 price: _,
@@ -276,8 +341,21 @@ module orderbookmodule::orders {
             limit.head = option::some(object::id(&new_entry));
             limit.tail = option::some(object::id(&new_entry));
             table::add(&mut orderBook.bid_limits, object::id(&limit), limit);
-            table::add(&mut orderBook.orders, object::id(&new_entry), new_entry);
+            vector::push_back(&mut orderBook.bids, new_entry);
         };
+    }
+
+    fun get_idx_opt<K: key + store>(self: &vector<K>, key: &ID): Option<u64> {
+        let i = 0;
+        let n = vector::length(self);
+        while (i < n) {
+            let elem = vector::borrow(self, i);
+            if (&object::id(elem) == key) {
+                return option::some(i)
+            };
+            i = i + 1;
+        };
+        option::none()
     }
 
     fun add_ask_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderBook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, ctx: &mut TxContext) {
@@ -287,12 +365,17 @@ module orderbookmodule::orders {
                 limit.head = option::some(object::id(&new_entry));
                 limit.tail = option::some(object::id(&new_entry));
             } else {
-                let tail_proxy = table::borrow_mut(&mut orderBook.orders, *option::borrow(&limit.tail));
-                new_entry.previous = option::some(object::id(tail_proxy));
-                tail_proxy.next = option::some(object::id(&new_entry));
-                limit.tail = option::some(object::id(&new_entry));
+                let tail_proxy_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&limit.tail));
+
+                if(option::is_some(&tail_proxy_vec_idx)) {
+                    let tail_proxy_idx = option::borrow(&tail_proxy_vec_idx);
+                    let tail_proxy = vector::borrow_mut(&mut orderBook.asks, *tail_proxy_idx);
+                    new_entry.previous = option::some(object::id(tail_proxy));
+                    tail_proxy.next = option::some(object::id(&new_entry));
+                    limit.tail = option::some(object::id(&new_entry));
+                }    
             };
-            table::add(&mut orderBook.orders, object::id(&new_entry), new_entry);
+            vector::push_back(&mut orderBook.asks, new_entry);
              let Limit {
                 id,
                 price: _,
@@ -305,7 +388,114 @@ module orderbookmodule::orders {
             limit.head = option::some(object::id(&new_entry));
             limit.tail = option::some(object::id(&new_entry));
             table::add(&mut orderBook.ask_limits, object::id(&limit), limit);
-            table::add(&mut orderBook.orders, object::id(&new_entry), new_entry);
+            vector::push_back(&mut orderBook.asks, new_entry);
         };
     }
+
+    fun match<AssetA, AssetB>(orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+        sort_vec(&mut orderBook.asks);
+        sort_vec(&mut orderBook.bids);
+        vector::reverse(&mut orderBook.bids);
+
+        let bids_count = 0;
+        let asks_count = 0;
+
+        if(vector::length(&orderBook.bids) == 0 || vector::length(&orderBook.asks) == 0) {
+            return
+        };
+
+        while (bids_count < vector::length(&orderBook.bids) && asks_count < vector::length(&orderBook.asks)) {
+            let bid_loop = true;
+
+            while(bid_loop) {
+                let bid = vector::borrow(&orderBook.bids, bids_count);
+                if(bid.current.price == 0) {
+                     bids_count = bids_count + 1;
+                } else {
+                    bid_loop = false;
+                }
+            };
+
+            let ask_loop = true;
+
+            while(ask_loop) {
+                let ask = vector::borrow(&orderBook.asks, asks_count);
+                if(ask.current.price == 0) {
+                     asks_count = asks_count + 1;
+                } else {
+                    ask_loop = false;
+                }
+            };
+
+            let bid = vector::borrow(&orderBook.bids, bids_count);
+            let ask = vector::borrow(&orderBook.asks, asks_count);
+
+            if(bid.current.price < ask.current.price) {
+                bids_count = vector::length(&orderBook.bids);
+                asks_count = vector::length(&orderBook.asks);
+                break
+            };
+
+            let parent_bid_limit_id = vector::borrow(&orderBook.bids, bids_count).parent_limit;
+            let parent_bid_limit = table::borrow_mut(&mut orderBook.bid_limits, parent_bid_limit_id);
+            let parent_ask_limit_id = vector::borrow(&orderBook.asks, asks_count).parent_limit;
+            let parent_ask_limit = table::borrow_mut(&mut orderBook.ask_limits, parent_ask_limit_id);
+            
+            let current_bid_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&parent_bid_limit.head));
+            let current_ask_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&parent_ask_limit.head));
+
+            while(option::is_some(&current_bid_idx) && option::is_some(&current_ask_idx)) {
+                let bid_idx = option::borrow(&current_bid_idx);
+                let ask_idx = option::borrow(&current_ask_idx);
+                let current_bid = vector::borrow_mut(&mut orderBook.bids, *bid_idx);
+                let current_ask = vector::borrow_mut(&mut orderBook.asks, *ask_idx);
+
+                if(current_bid.current.current_quantity == current_ask.current.current_quantity) {
+                    let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
+                    let bidder_usdt = current_bid.current.current_quantity * current_ask.current.price;
+                    let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
+
+                    if(balance::value(bidder_usdt_wallet) >= bidder_usdt && balance::value(asker_sui_wallet) >= current_ask.current.current_quantity) {
+                        let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
+                        let asset_b_to_change = balance::split(asker_sui_wallet, current_ask.current.current_quantity);
+                        public_transfer(coin::from_balance<AssetA>(asset_a_to_change, ctx), current_ask.current.user);
+                        public_transfer(coin::from_balance<AssetB>(asset_b_to_change, ctx), current_bid.current.user);
+                    } else {
+
+                    };
+
+                    current_bid.current.current_quantity = 0;
+                    current_ask.current.current_quantity = 0;
+                    current_bid_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&current_bid.next));
+                    current_ask_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&current_ask.next));
+                // тут я остановился
+                }
+            };            
+        }
+    }
+
+    public fun sort_vec(elems: &mut vector<OrderbookEntry>) {
+            if (vector::length(elems) < 2) return;
+
+            let i = 0;
+            let swapped = false;
+            while ({
+                // Loop invariants are defined within the loop head.
+                spec {
+                    invariant !swapped ==> (forall j in 0..i: elems[j].current.price <= elems[j + 1].current.price);
+                    invariant len(elems) == len(old(elems));
+                    invariant forall a in old(elems): contains(elems, a);
+                    invariant forall a in elems: contains(old(elems), a);
+                };
+                i < vector::length(elems) - 1
+            })
+            {
+                if (vector::borrow(elems, i).current.price > vector::borrow(elems, i + 1).current.price) {
+                    vector::swap(elems, i, i + 1);
+                    swapped = true;
+                };
+                i = i + 1;
+            };
+            if (swapped) sort_vec(elems);
+        }
 }
