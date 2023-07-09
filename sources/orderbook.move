@@ -724,20 +724,54 @@ module orderbookmodule::orders {
         )
     }
 
-        #[test_only]
-        public fun init_for_testing(ctx: &mut TxContext) {
-            init(ctx)
+    public fun get_bid_wallet_amount<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, ctx: &mut TxContext): u64 {
+        if(table::contains(&orderbook.asset_a, tx_context::sender(ctx))) {
+            return balance::value(table::borrow(&orderbook.asset_a, tx_context::sender(ctx)))
+        } else {
+            return 0_u64
         }
+    }
+
+    public fun get_bid_order_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, index: u64): (ID, ID, Option<ID>, Option<ID>, u64, u64,u64, address) {
+        let obEntry = vector::borrow(&orderbook.bids, index);
+
+        return (
+            object::uid_to_inner(&obEntry.id),
+            obEntry.parent_limit,
+            obEntry.next,
+            obEntry.previous,
+            obEntry.current.price,
+            obEntry.current.initial_quantity,
+            obEntry.current.current_quantity,
+            obEntry.current.user,
+        )
+    }
+
+    public fun get_bid_limit_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, id: ID): (u64, Option<ID>, Option<ID>) {
+        let limit = table::borrow(&orderbook.bid_limits, id);
+        return (
+            limit.price,
+            limit.head,
+            limit.tail,
+        )
+    }
+
+    #[test_only]
+    public fun init_for_testing(ctx: &mut TxContext) {
+        init(ctx)
+    }
 }
 
 #[test_only]
 module orderbookmodule::orders_tests {
     use sui::test_scenario::{Self as test, Scenario, next_tx, ctx};
+    use sui::coin::{mint_for_testing as mint};
     use orderbookmodule::orders::{Self, OrderbookManagerCap, Orderbook};
-    
+    use std::option::{Self};
+
     struct ASSET_A {}
     struct ASSET_B {}
-    // use std::debug;
+    use std::debug;
     // use std::vector::{Self};
 
     #[test] fun test_init_orderbook() {
@@ -749,6 +783,12 @@ module orderbookmodule::orders_tests {
     #[test] fun test_add_order() {
         let scenario = scenario();
         test_add_order_(&mut scenario);
+        test::end(scenario);
+    }
+
+    #[test] fun test_remove_order() {
+        let scenario = scenario();
+        test_remove_order_(&mut scenario);
         test::end(scenario);
     }
 
@@ -795,8 +835,53 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+           
+            orders::add_bid_order<ASSET_A, ASSET_B>(309_000_000_000, &mut orderbook, mint<ASSET_A>(309_000_000_000 * 10, ctx(test)), ctx(test));
+            
+            let theguy_wallet_amount = orders::get_bid_wallet_amount(&orderbook, ctx(test));
+            assert!(theguy_wallet_amount == 309_000_000_000_0, 0);
+
+            let (orderbook_entry_id, parent_limit,next,previous,price,initial_quantity,current_quantity,user) = orders::get_bid_order_info(&orderbook, 0);
+           
+            assert!(option::is_none(&next), 0);
+            assert!(option::is_none(&previous), 0);
+            assert!(price == 309_000_000_000, 0);
+            assert!(initial_quantity == 309_000_000_000_0,0);
+            assert!(current_quantity == 309_000_000_000_0,0);
+            assert!(user == theguy, 0);
+
+            let (price, head, tail) = orders::get_bid_limit_info<ASSET_A, ASSET_B>(&orderbook, parent_limit);
+            assert!(price == 309_000_000_000, 0);
+            assert!(head == option::some(orderbook_entry_id), 0);
+            assert!(tail == option::some(orderbook_entry_id), 0);
+
+            let (bids_len, asks_len, bid_limits_len, ask_limits_len, asset_a_len, asset_b_len) = orders::get_length_fields<ASSET_A, ASSET_B>(&orderbook);
+
+            assert!(bids_len == 1, 0);
+            assert!(asks_len == 0, 0);
+            assert!(bid_limits_len == 1, 0);
+            assert!(ask_limits_len == 0, 0);
+            assert!(asset_a_len == 1, 0);
+            assert!(asset_b_len == 0, 0);
+
             test::return_shared(orderbook);
         }
+    }
+
+    fun test_remove_order_(test: &mut Scenario) {
+        test_add_order_(test);
+
+         let (_, theguy) = people();
+
+        next_tx(test, theguy);
+        let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+        // debug::
+        let (_orderbook_entry_id, _parent_limit,_next,_previous,_price,_initial_quantity,_current_quantity,_user) = orders::get_bid_order_info(&orderbook, 0);
+           
+        // let obEntry = test::take_shared_by_id<OrderbookEntry>(test, orderbook_entry_id);
+        debug::print(&orderbook);
+        test::return_shared(orderbook);
+        // test::return_shared(obEntry);
     }
 
     fun scenario(): Scenario { test::begin(@0x1) }
