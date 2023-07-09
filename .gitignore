@@ -1,2 +1,6 @@
 .idea
 build
+build/*
+build/**
+build/forge2/**
+build/forge2/*

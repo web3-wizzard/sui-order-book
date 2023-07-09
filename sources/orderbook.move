@@ -5,9 +5,10 @@ module orderbookmodule::orders {
     use std::vector::{Self};
     use sui::table::{Self, Table};
     use sui::tx_context::{Self, TxContext};
-    use sui::balance::{Self, Balance, split};
-    use sui::coin::{Self, Coin, join};
+    use sui::balance::{Self, Balance};
+    use sui::coin::{Self, Coin};
     use sui::transfer::{public_transfer};
+    use std::debug;
 
     struct OrderbookManagerCap has key, store { id: UID }
 
@@ -71,7 +72,7 @@ module orderbookmodule::orders {
     }
 
     // need to handle initial quantity
-    public entry fun add_bid_order<AssetA, AssetB>(price: u64, user: address, orderBook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetA>,ctx: &mut TxContext) {
+    public entry fun add_bid_order<AssetA, AssetB>(price: u64, orderBook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetA>,ctx: &mut TxContext) {
         let base_limit = create_limit(price, ctx);
         
         let asset_a_balance = coin::into_balance(coin);
@@ -433,6 +434,9 @@ module orderbookmodule::orders {
             if(bid.current.price < ask.current.price) {
                 bids_count = vector::length(&orderBook.bids);
                 asks_count = vector::length(&orderBook.asks);
+
+                debug::print(&bids_count);
+                debug::print(&asks_count);
                 break
             };
 
@@ -707,5 +711,94 @@ module orderbookmodule::orders {
                 i = i + 1;
             };
             if (swapped) sort_vec(elems);
+    }
+
+    public fun get_length_fields<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>):(u64,u64,u64,u64, u64,u64) {
+        return (
+            vector::length<OrderbookEntry>(&orderbook.bids),
+            vector::length<OrderbookEntry>(&orderbook.asks),
+            table::length<ID, Limit>(&orderbook.bid_limits),
+            table::length<ID, Limit>(&orderbook.ask_limits),
+            table::length<address, Balance<AssetA>>(&orderbook.asset_a),
+            table::length<address, Balance<AssetB>>(&orderbook.asset_b),
+        )
+    }
+
+        #[test_only]
+        public fun init_for_testing(ctx: &mut TxContext) {
+            init(ctx)
         }
+}
+
+#[test_only]
+module orderbookmodule::orders_tests {
+    use sui::test_scenario::{Self as test, Scenario, next_tx, ctx};
+    use orderbookmodule::orders::{Self, OrderbookManagerCap, Orderbook};
+    
+    struct ASSET_A {}
+    struct ASSET_B {}
+    // use std::debug;
+    // use std::vector::{Self};
+
+    #[test] fun test_init_orderbook() {
+        let scenario = scenario();
+        test_init_orderbook_(&mut scenario);
+        test::end(scenario);
+    }
+
+    #[test] fun test_add_order() {
+        let scenario = scenario();
+        test_add_order_(&mut scenario);
+        test::end(scenario);
+    }
+
+    fun test_init_orderbook_(test: &mut Scenario) {
+        let (owner, _) = people();
+
+        next_tx(test, owner);
+
+        {
+            orders::init_for_testing(ctx(test))
+        };
+
+        next_tx(test, owner);
+
+        {
+            let witness = test::take_from_sender<OrderbookManagerCap>(test);
+            orders::create_orderbook<ASSET_A, ASSET_B>(&witness, ctx(test));
+            test::return_to_sender(test, witness);
+        };
+
+        next_tx(test, owner);
+
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            let (bids_len, asks_len, bid_limits_len, ask_limits_len, asset_a_len, asset_b_len) = orders::get_length_fields<ASSET_A, ASSET_B>(&orderbook);
+            
+            assert!(bids_len == 0, 0);
+            assert!(asks_len == 0, 0);
+            assert!(bid_limits_len == 0, 0);
+            assert!(ask_limits_len == 0, 0);
+            assert!(asset_a_len == 0, 0);
+            assert!(asset_b_len == 0, 0);
+
+            test::return_shared(orderbook);
+        }
+    }
+
+    fun test_add_order_(test: &mut Scenario) {
+        test_init_orderbook_(test);
+
+        let (_, theguy) = people();
+
+        next_tx(test, theguy);
+
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            test::return_shared(orderbook);
+        }
+    }
+
+    fun scenario(): Scenario { test::begin(@0x1) }
+    fun people(): (address, address) { (@0xBEEF, @0x1337) }
 }
