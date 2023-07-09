@@ -7,6 +7,7 @@ module orderbookmodule::orders {
     use sui::tx_context::{Self, TxContext};
     use sui::balance::{Self, Balance, split};
     use sui::coin::{Self, Coin, join};
+    use sui::transfer::{public_transfer};
 
     struct OrderbookManagerCap has key, store { id: UID }
 
@@ -430,11 +431,83 @@ module orderbookmodule::orders {
             let ask = vector::borrow(&orderBook.asks, asks_count);
 
             if(bid.current.price < ask.current.price) {
-                bids_count= vector::length(&orderBook.bids);
-                asks_count= vector::length(&orderBook.asks);
+                bids_count = vector::length(&orderBook.bids);
+                asks_count = vector::length(&orderBook.asks);
                 break
             };
+
+            let parent_bid_limit_id = vector::borrow(&orderBook.bids, bids_count).parent_limit;
+            let parent_bid_limit = table::borrow_mut(&mut orderBook.bid_limits, parent_bid_limit_id);
+            let parent_ask_limit_id = vector::borrow(&orderBook.asks, asks_count).parent_limit;
+            let parent_ask_limit = table::borrow_mut(&mut orderBook.ask_limits, parent_ask_limit_id);
+            
+            let current_bid_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&parent_bid_limit.head));
+            let current_ask_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&parent_ask_limit.head));
+
+            while(option::is_some(&current_bid_idx) && option::is_some(&current_ask_idx)) {
+                let bid_idx = option::borrow(&current_bid_idx);
+                let ask_idx = option::borrow(&current_ask_idx);
+                let current_bid = vector::borrow_mut(&mut orderBook.bids, *bid_idx);
+                let current_ask = vector::borrow_mut(&mut orderBook.asks, *ask_idx);
+
+                if(current_bid.current.current_quantity == current_ask.current.current_quantity) {
+                    let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
+                    let bidder_usdt = current_bid.current.current_quantity * current_ask.current.price;
+                    let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
+
+                    if(balance::value(bidder_usdt_wallet) >= bidder_usdt && balance::value(asker_sui_wallet) >= current_ask.current.current_quantity) {
+                        let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
+                        let asset_b_to_change = balance::split(asker_sui_wallet, current_ask.current.current_quantity);
+                        public_transfer(coin::from_balance<AssetA>(asset_a_to_change, ctx), current_ask.current.user);
+                        public_transfer(coin::from_balance<AssetB>(asset_b_to_change, ctx), current_bid.current.user);
+                    } else {
+                            // return error because sth wrong with wallets
+                    };
+
+                    current_bid.current.current_quantity = 0;
+                    current_ask.current.current_quantity = 0;
+                    current_bid_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&current_bid.next));
+                    current_ask_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&current_ask.next));
+                } else if(
+                    current_bid.current.current_quantity > current_ask.current.current_quantity
+                ) {
+                    let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
+                    let bidder_usdt = current_bid.current.current_quantity * current_ask.current.price;
+                    let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
+
+                    if(balance::value(bidder_usdt_wallet) >= bidder_usdt && balance::value(asker_sui_wallet) >= current_ask.current.current_quantity) {
+                        let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
+                        let asset_b_to_change = balance::split(asker_sui_wallet, current_ask.current.current_quantity);
+                        public_transfer(coin::from_balance<AssetA>(asset_a_to_change, ctx), current_ask.current.user);
+                        public_transfer(coin::from_balance<AssetB>(asset_b_to_change, ctx), current_bid.current.user);
+                    } else {
+                        // return error because sth wrong with wallets
+                    };
+                    current_bid.current.current_quantity = current_bid.current.current_quantity - current_ask.current.current_quantity;
+                    current_ask.current.current_quantity = 0;
+                    current_ask_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&current_ask.next));
+                } else {
+                    let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
+                    let bidder_usdt = current_bid.current.current_quantity * current_ask.current.price;
+                    let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
+
+                    if(balance::value(bidder_usdt_wallet) >= bidder_usdt &&  balance::value(asker_sui_wallet) >= current_bid.current.current_quantity) {
+                        let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
+                        let asset_b_to_change = balance::split(asker_sui_wallet, current_bid.current.current_quantity);
+                        public_transfer(coin::from_balance<AssetA>(asset_a_to_change, ctx), current_ask.current.user);
+                        public_transfer(coin::from_balance<AssetB>(asset_b_to_change, ctx), current_bid.current.user);
+                    } else {
+                        // return error because sth wrong with wallets
+                    };
+
+                    current_ask.current.current_quantity = current_ask.current.current_quantity - current_bid.current.current_quantity;
+                    current_bid.current.current_quantity = 0;
+                    current_bid_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&current_bid.next));
+                }
+            };            
         }
+
+        // stopped here
     }
 
     public fun sort_vec(elems: &mut vector<OrderbookEntry>) {

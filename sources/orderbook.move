@@ -461,17 +461,53 @@ module orderbookmodule::orders {
                         public_transfer(coin::from_balance<AssetA>(asset_a_to_change, ctx), current_ask.current.user);
                         public_transfer(coin::from_balance<AssetB>(asset_b_to_change, ctx), current_bid.current.user);
                     } else {
-
+                            // return error because sth wrong with wallets
                     };
 
                     current_bid.current.current_quantity = 0;
                     current_ask.current.current_quantity = 0;
                     current_bid_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&current_bid.next));
                     current_ask_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&current_ask.next));
-                // тут я остановился
+                } else if(
+                    current_bid.current.current_quantity > current_ask.current.current_quantity
+                ) {
+                    let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
+                    let bidder_usdt = current_bid.current.current_quantity * current_ask.current.price;
+                    let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
+
+                    if(balance::value(bidder_usdt_wallet) >= bidder_usdt && balance::value(asker_sui_wallet) >= current_ask.current.current_quantity) {
+                        let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
+                        let asset_b_to_change = balance::split(asker_sui_wallet, current_ask.current.current_quantity);
+                        public_transfer(coin::from_balance<AssetA>(asset_a_to_change, ctx), current_ask.current.user);
+                        public_transfer(coin::from_balance<AssetB>(asset_b_to_change, ctx), current_bid.current.user);
+                    } else {
+                        // return error because sth wrong with wallets
+                    };
+                    current_bid.current.current_quantity = current_bid.current.current_quantity - current_ask.current.current_quantity;
+                    current_ask.current.current_quantity = 0;
+                    current_ask_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&current_ask.next));
+                } else {
+                    let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
+                    let bidder_usdt = current_bid.current.current_quantity * current_ask.current.price;
+                    let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
+
+                    if(balance::value(bidder_usdt_wallet) >= bidder_usdt &&  balance::value(asker_sui_wallet) >= current_bid.current.current_quantity) {
+                        let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
+                        let asset_b_to_change = balance::split(asker_sui_wallet, current_bid.current.current_quantity);
+                        public_transfer(coin::from_balance<AssetA>(asset_a_to_change, ctx), current_ask.current.user);
+                        public_transfer(coin::from_balance<AssetB>(asset_b_to_change, ctx), current_bid.current.user);
+                    } else {
+                        // return error because sth wrong with wallets
+                    };
+
+                    current_ask.current.current_quantity = current_ask.current.current_quantity - current_bid.current.current_quantity;
+                    current_bid.current.current_quantity = 0;
+                    current_bid_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&current_bid.next));
                 }
             };            
         }
+
+        // stopped here
     }
 
     public fun sort_vec(elems: &mut vector<OrderbookEntry>) {
