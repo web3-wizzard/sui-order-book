@@ -382,7 +382,7 @@ module orderbookmodule::orders {
                 head: _,
                 tail: _,
             } = limit;
-            object::delete(id)
+            object::delete(id);
         } else {
             let new_entry = create_new_entry(order, object::id(&limit),is_by_side, ctx);
             limit.head = option::some(object::id(&new_entry));
@@ -505,9 +505,183 @@ module orderbookmodule::orders {
                     current_bid_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&current_bid.next));
                 }
             };            
-        }
+        };
 
         // stopped here
+        let bids_count2 = 0;
+        let bid_limits_vec = vector::empty<ID>();
+        let asks_count2 = 0;
+        let ask_limits_vec = vector::empty<ID>();
+
+        let bid_limits_to_delete = vector::empty<ID>();
+        let bid_orders_to_delete = vector::empty<ID>();
+
+        let ask_limits_to_delete = vector::empty<ID>();
+        let ask_orders_to_delete = vector::empty<ID>();
+
+        while(vector::borrow(&orderBook.bids, bids_count2).current.current_quantity == 0) {
+            vector::push_back(&mut bid_limits_vec, vector::borrow(&orderBook.bids, bids_count2).parent_limit);
+            bids_count2 = bids_count2 + 1;
+        };
+
+        while(vector::borrow(&orderBook.asks, asks_count2).current.current_quantity == 0) {
+            vector::push_back(&mut ask_limits_vec, vector::borrow(&orderBook.asks, asks_count2).parent_limit);
+            asks_count2 = asks_count2 + 1;
+        };
+
+        let i = 0; 
+        while (i < vector::length(&bid_limits_vec)) {
+            let bid_limit_id = vector::borrow(&bid_limits_vec, i);
+            let limit = table::borrow_mut(&mut orderBook.bid_limits, *bid_limit_id);
+            let run_bid_limit = true;
+
+            while(run_bid_limit) {
+                if(option::is_some<ID>(&limit.head)) {
+                    let order_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&limit.head));
+                    let order = vector::borrow_mut(&mut orderBook.bids, *option::borrow(&order_idx));
+
+                    if(order.current.current_quantity == 0) {
+                        if(option::is_some(&order.previous)) {
+                            // "Error, order can not have previous"
+                        };
+
+                        if(option::is_some(&order.next)) {
+                            limit.head = order.next;
+                            let next_order_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&order.next));
+                            let next_order = vector::borrow_mut(&mut orderBook.bids, *option::borrow(&next_order_idx));
+                            next_order.previous = option::none();
+                        } else if (option::is_some(&limit.tail) && option::borrow(&limit.head) == option::borrow(&limit.tail)) {
+                            vector::push_back(&mut bid_limits_to_delete, *bid_limit_id);
+
+                            run_bid_limit = false;
+                        };
+                        
+                        vector::push_back(&mut bid_orders_to_delete, *option::borrow(&limit.head));
+                    }
+                }
+                
+            };
+            
+            i = i + 1;
+        };
+
+
+        let p = 0; 
+        while (p < vector::length(&ask_limits_vec)) {
+            let ask_limit_id = vector::borrow(&ask_limits_vec, p);
+            let limit = table::borrow_mut(&mut orderBook.ask_limits, *ask_limit_id);
+            let run_ask_limit = true;
+
+            while(run_ask_limit) {
+                if(option::is_some<ID>(&limit.head)) {
+                    let order_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&limit.head));
+                    let order = vector::borrow_mut(&mut orderBook.asks, *option::borrow(&order_idx));
+
+                    if(order.current.current_quantity == 0) {
+                        if(option::is_some(&order.previous)) {
+                            // "Error, order can not have previous"
+                        };
+
+                        if(option::is_some(&order.next)) {
+                            limit.head = order.next;
+                            let next_order_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&order.next));
+                            let next_order = vector::borrow_mut(&mut orderBook.asks, *option::borrow(&next_order_idx));
+                            next_order.previous = option::none();
+                        } else if (option::is_some(&limit.tail) && option::borrow(&limit.head) == option::borrow(&limit.tail)) {
+                            vector::push_back(&mut ask_limits_to_delete, *ask_limit_id);
+
+                            run_ask_limit = false;
+                        };
+                        
+                        vector::push_back(&mut ask_orders_to_delete, *option::borrow(&limit.head));
+                    }
+                }
+                
+            };
+            
+            p = p + 1;
+        };
+
+        let y = 0;
+        while(y < vector::length(&bid_limits_to_delete)) {
+            let limit = table::remove(&mut orderBook.bid_limits, *vector::borrow(&bid_limits_to_delete, y));
+            let Limit {
+                            id,
+                            price: _,
+                            head: _,
+                            tail: _,
+                        } = limit;
+            object::delete(id);
+            y = y + 1;
+        };
+
+        let z = 0;
+        while(z < vector::length(&bid_orders_to_delete)) {
+            let order_id = vector::borrow(&bid_orders_to_delete, z);
+            let bid_order_to_delete_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, order_id);
+            let orderBookEntry = vector::remove(&mut orderBook.bids, *option::borrow(&bid_order_to_delete_idx));
+            let OrderbookEntry {
+                            id,
+                            current,
+                            is_by_side: _,
+                            parent_limit: _,
+                            next: _,
+                            previous: _,
+                        } = orderBookEntry;
+            object::delete(id);
+
+            let Order {
+                id,
+                price: _,
+                is_by_side: _,
+                initial_quantity: _,
+                current_quantity: _,
+                user: _,
+            } = current;
+            object::delete(id);
+            z = z + 1;
+        };
+
+
+        let d = 0;
+        while(d < vector::length(&bid_limits_to_delete)) {
+            let limit = table::remove(&mut orderBook.ask_limits, *vector::borrow(&ask_limits_to_delete, d));
+            let Limit {
+                            id,
+                            price: _,
+                            head: _,
+                            tail: _,
+                        } = limit;
+            object::delete(id);
+            d = d + 1;
+        };
+
+        let h = 0;
+        while(h < vector::length(&ask_orders_to_delete)) {
+            let order_id = vector::borrow(&ask_orders_to_delete, h);
+            let ask_order_to_delete_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, order_id);
+            let orderBookEntry = vector::remove(&mut orderBook.asks, *option::borrow(&ask_order_to_delete_idx));
+            let OrderbookEntry {
+                            id,
+                            current,
+                            is_by_side: _,
+                            parent_limit: _,
+                            next: _,
+                            previous: _,
+                        } = orderBookEntry;
+            object::delete(id);
+
+            let Order {
+                id,
+                price: _,
+                is_by_side: _,
+                initial_quantity: _,
+                current_quantity: _,
+                user: _,
+            } = current;
+            object::delete(id);
+            h = h + 1;
+        }
     }
 
     public fun sort_vec(elems: &mut vector<OrderbookEntry>) {
