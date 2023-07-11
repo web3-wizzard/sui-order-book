@@ -86,27 +86,27 @@ module orderbookmodule::orders {
         add_bid_order_to_orderbook(order, base_limit, orderBook, true, ctx);
     }
 
-    public entry fun remove_order_from_order_book<AssetA, AssetB>(orderbookEntry: OrderbookEntry,  orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
-        if(vector::contains(&orderBook.bids, &orderbookEntry) || vector::contains(&orderBook.asks, &orderbookEntry)) {
-            let refund_quantity = orderbookEntry.current.current_quantity;
-            let is_by_side = orderbookEntry.is_by_side;
+    // public entry fun remove_order_from_order_book<AssetA, AssetB>(orderbookEntry: OrderbookEntry,  orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+    //     if(vector::contains(&orderBook.bids, &orderbookEntry) || vector::contains(&orderBook.asks, &orderbookEntry)) {
+    //         let refund_quantity = orderbookEntry.current.current_quantity;
+    //         let is_by_side = orderbookEntry.is_by_side;
 
-            let sender = tx_context::sender(ctx);
-            if(is_by_side) { 
-                remove_bid_order(orderbookEntry, orderBook);
-                let user_balance = table::borrow_mut(&mut orderBook.asset_a, sender);
-                let refund = coin::take(user_balance, refund_quantity, ctx);
-                transfer::public_transfer(refund, sender);
-            } else {
-                remove_ask_order(orderbookEntry, orderBook);
-                let user_balance = table::borrow_mut(&mut orderBook.asset_b, sender);
-                let refund = coin::take(user_balance, refund_quantity, ctx);
-                transfer::public_transfer(refund, sender);
-            }; 
-        } else {
-           remove_order_from_store(orderbookEntry);
-        }
-    }
+    //         let sender = tx_context::sender(ctx);
+    //         if(is_by_side) { 
+    //             remove_bid_order(orderbookEntry, orderBook);
+    //             let user_balance = table::borrow_mut(&mut orderBook.asset_a, sender);
+    //             let refund = coin::take(user_balance, refund_quantity, ctx);
+    //             transfer::public_transfer(refund, sender);
+    //         } else {
+    //             remove_ask_order(orderbookEntry, orderBook);
+    //             let user_balance = table::borrow_mut(&mut orderBook.asset_b, sender);
+    //             let refund = coin::take(user_balance, refund_quantity, ctx);
+    //             transfer::public_transfer(refund, sender);
+    //         }; 
+    //     } else {
+    //        remove_order_from_store(orderbookEntry);
+    //     }
+    // }
 
     fun remove_order_from_store(orderbookEntry: OrderbookEntry){
         let OrderbookEntry {
@@ -140,28 +140,37 @@ module orderbookmodule::orders {
          object::delete(id)            
     }
 
-    fun remove_bid_order<AssetA, AssetB>(orderbookEntry: OrderbookEntry, orderBook: &mut Orderbook<AssetA, AssetB>) {
+//todo make private
+    public fun remove_bid_order<AssetA, AssetB>(orderbookEntryID: ID, orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+        let ob_entry_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, &orderbookEntryID);
+
+        if(option::is_none(&ob_entry_idx)) {
+            // throw error
+        };
+    
+        let previous = vector::borrow(&orderBook.bids, *option::borrow(&ob_entry_idx)).previous;
+        let next = vector::borrow(&orderBook.bids, *option::borrow(&ob_entry_idx)).next;
         // 1. Deal with location of OrderbookEntry within the linked list.
-        if(option::is_some(&orderbookEntry.previous) && option::is_some(&orderbookEntry.next)) {
-            let next_id = option::borrow(&orderbookEntry.next);
-            let previous_id = option::borrow(&orderbookEntry.previous);
+        if(option::is_some(&previous) && option::is_some(&next)) {
+            let next_id = option::borrow<ID>(&next);
+            let previous_id = option::borrow<ID>(&previous);
 
             let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, next_id);
             let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, previous_id);
 
             if(option::is_some(&next_vec_idx)) {
                 let next_idx = option::borrow(&next_vec_idx);
-                let next = vector::borrow_mut(&mut orderBook.bids, *next_idx);
-                next.previous = orderbookEntry.previous;    
+                let next = vector::borrow_mut<OrderbookEntry>(&mut orderBook.bids, *next_idx);
+                next.previous = previous;    
             };
 
             if(option::is_some(&prev_vec_idx)) {
                 let prev_idx = option::borrow(&prev_vec_idx);
                 let prev = vector::borrow_mut(&mut orderBook.bids, *prev_idx);
-                prev.next = orderbookEntry.next; 
+                prev.next = next; 
             };
-        } else if(option::is_some(&orderbookEntry.previous)) {
-            let previous_id = option::borrow(&orderbookEntry.previous);
+        } else if(option::is_some(&previous)) {
+            let previous_id = option::borrow(&previous);
             let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, previous_id);
 
             if(option::is_some(&prev_vec_idx)) {
@@ -169,8 +178,8 @@ module orderbookmodule::orders {
                 let prev = vector::borrow_mut(&mut orderBook.bids, *prev_idx);
                 prev.next = option::none(); 
             };
-        } else if(option::is_some(&orderbookEntry.next)) {
-            let next_id = option::borrow(&orderbookEntry.next);
+        } else if(option::is_some(&next)) {
+            let next_id = option::borrow(&next);
             let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, next_id);
 
             if(option::is_some(&next_vec_idx)) {
@@ -178,33 +187,57 @@ module orderbookmodule::orders {
                 let next = vector::borrow_mut(&mut orderBook.bids, *next_idx);
                 next.previous = option::none();    
             };
+        };
+
+        let orderbookEntry = vector::borrow(&orderBook.bids, *option::borrow(&ob_entry_idx));
+
+        if(&orderbookEntry.current.user != &tx_context::sender(ctx)) {
+            // return error
         };
 
         deal_with_limit(&mut orderBook.bid_limits, orderbookEntry);
+        
+        let orderbookEntry = vector::remove(&mut orderBook.bids, *option::borrow(&ob_entry_idx));
+        let order_curent_quantity = orderbookEntry.current.current_quantity;
+        remove_order_from_store(orderbookEntry);
+        let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, tx_context::sender(ctx));
+
+        if(balance::value(bidder_usdt_wallet) >= order_curent_quantity) {
+            let asset_a_to_refund = balance::split(bidder_usdt_wallet, order_curent_quantity);
+            public_transfer(coin::from_balance<AssetA>(asset_a_to_refund, ctx), tx_context::sender(ctx));
+        }
     }
 
-    fun remove_ask_order<AssetA, AssetB>(orderbookEntry: OrderbookEntry, orderBook: &mut Orderbook<AssetA, AssetB>) {
+    public fun remove_ask_order<AssetA, AssetB>(orderbookEntryID: ID, orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+        let ob_entry_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, &orderbookEntryID);
+
+        if(option::is_none(&ob_entry_idx)) {
+            // throw error
+        };
+    
+        let previous = vector::borrow(&orderBook.asks, *option::borrow(&ob_entry_idx)).previous;
+        let next = vector::borrow(&orderBook.asks, *option::borrow(&ob_entry_idx)).next;
         // 1. Deal with location of OrderbookEntry within the linked list.
-        if(option::is_some(&orderbookEntry.previous) && option::is_some(&orderbookEntry.next)) {
-            let next_id = option::borrow(&orderbookEntry.next);
-            let previous_id = option::borrow(&orderbookEntry.previous);
+        if(option::is_some(&previous) && option::is_some(&next)) {
+            let next_id = option::borrow<ID>(&next);
+            let previous_id = option::borrow<ID>(&previous);
 
             let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, next_id);
             let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, previous_id);
 
             if(option::is_some(&next_vec_idx)) {
                 let next_idx = option::borrow(&next_vec_idx);
-                let next = vector::borrow_mut(&mut orderBook.asks, *next_idx);
-                next.previous = orderbookEntry.previous;    
+                let next = vector::borrow_mut<OrderbookEntry>(&mut orderBook.asks, *next_idx);
+                next.previous = previous;    
             };
 
             if(option::is_some(&prev_vec_idx)) {
                 let prev_idx = option::borrow(&prev_vec_idx);
                 let prev = vector::borrow_mut(&mut orderBook.asks, *prev_idx);
-                prev.next = orderbookEntry.next; 
+                prev.next = next; 
             };
-        } else if(option::is_some(&orderbookEntry.previous)) {
-            let previous_id = option::borrow(&orderbookEntry.previous);
+        } else if(option::is_some(&previous)) {
+            let previous_id = option::borrow(&previous);
             let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, previous_id);
 
             if(option::is_some(&prev_vec_idx)) {
@@ -212,8 +245,8 @@ module orderbookmodule::orders {
                 let prev = vector::borrow_mut(&mut orderBook.asks, *prev_idx);
                 prev.next = option::none(); 
             };
-        } else if(option::is_some(&orderbookEntry.next)) {
-            let next_id = option::borrow(&orderbookEntry.next);
+        } else if(option::is_some(&next)) {
+            let next_id = option::borrow(&next);
             let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, next_id);
 
             if(option::is_some(&next_vec_idx)) {
@@ -223,31 +256,86 @@ module orderbookmodule::orders {
             };
         };
 
+        let orderbookEntry = vector::borrow(&orderBook.asks, *option::borrow(&ob_entry_idx));
+
+        if(&orderbookEntry.current.user != &tx_context::sender(ctx)) {
+            // return error
+        };
+
         deal_with_limit(&mut orderBook.ask_limits, orderbookEntry);
+        
+        let orderbookEntry = vector::remove(&mut orderBook.asks, *option::borrow(&ob_entry_idx));
+        let order_curent_quantity = orderbookEntry.current.current_quantity;
+        remove_order_from_store(orderbookEntry);
+        let bidder_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, tx_context::sender(ctx));
+
+        if(balance::value(bidder_sui_wallet) >= order_curent_quantity) {
+            let asset_b_to_refund = balance::split(bidder_sui_wallet, order_curent_quantity);
+            public_transfer(coin::from_balance<AssetB>(asset_b_to_refund, ctx), tx_context::sender(ctx));
+        }
     }
 
-    fun deal_with_limit(limits: &mut Table<ID, Limit>, orderbookEntry: OrderbookEntry) {
+    // fun remove_ask_order<AssetA, AssetB>(orderbookEntry: OrderbookEntry, orderBook: &mut Orderbook<AssetA, AssetB>) {
+    //     // 1. Deal with location of OrderbookEntry within the linked list.
+    //     if(option::is_some(&orderbookEntry.previous) && option::is_some(&orderbookEntry.next)) {
+    //         let next_id = option::borrow(&orderbookEntry.next);
+    //         let previous_id = option::borrow(&orderbookEntry.previous);
+
+    //         let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, next_id);
+    //         let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, previous_id);
+
+    //         if(option::is_some(&next_vec_idx)) {
+    //             let next_idx = option::borrow(&next_vec_idx);
+    //             let next = vector::borrow_mut(&mut orderBook.asks, *next_idx);
+    //             next.previous = orderbookEntry.previous;    
+    //         };
+
+    //         if(option::is_some(&prev_vec_idx)) {
+    //             let prev_idx = option::borrow(&prev_vec_idx);
+    //             let prev = vector::borrow_mut(&mut orderBook.asks, *prev_idx);
+    //             prev.next = orderbookEntry.next; 
+    //         };
+    //     } else if(option::is_some(&orderbookEntry.previous)) {
+    //         let previous_id = option::borrow(&orderbookEntry.previous);
+    //         let prev_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, previous_id);
+
+    //         if(option::is_some(&prev_vec_idx)) {
+    //             let prev_idx = option::borrow(&prev_vec_idx);
+    //             let prev = vector::borrow_mut(&mut orderBook.asks, *prev_idx);
+    //             prev.next = option::none(); 
+    //         };
+    //     } else if(option::is_some(&orderbookEntry.next)) {
+    //         let next_id = option::borrow(&orderbookEntry.next);
+    //         let next_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, next_id);
+
+    //         if(option::is_some(&next_vec_idx)) {
+    //             let next_idx = option::borrow(&next_vec_idx);
+    //             let next = vector::borrow_mut(&mut orderBook.asks, *next_idx);
+    //             next.previous = option::none();    
+    //         };
+    //     };
+
+    //     deal_with_limit(&mut orderBook.ask_limits, orderbookEntry);
+    // }
+
+    fun deal_with_limit(limits: &mut Table<ID, Limit>, orderbookEntry: &OrderbookEntry) {
         let parent_limit = table::borrow_mut(limits, orderbookEntry.parent_limit);
 
             if(option::is_some(&parent_limit.head) && option::is_some(&parent_limit.tail)) {
                 let parent_limit_head_id = option::borrow(&parent_limit.head);
                 let parent_limit_tail_id = option::borrow(&parent_limit.tail);
 
-                if(*parent_limit_head_id == object::id(&orderbookEntry) && *parent_limit_tail_id == object::id(&orderbookEntry)) {
+                if(*parent_limit_head_id == object::id(orderbookEntry) && *parent_limit_tail_id == object::id(orderbookEntry)) {
                     parent_limit.head = option::none();
                     parent_limit.tail = option::none();
 
                     let parent_limit_to_delete = table::remove(limits, orderbookEntry.parent_limit);
                     remove_parent_limit_from_store(parent_limit_to_delete);
-                } else if(*parent_limit_head_id == object::id(&orderbookEntry)) {
+                } else if(*parent_limit_head_id == object::id(orderbookEntry)) {
                     parent_limit.head = orderbookEntry.next;
-                } else if(*parent_limit_tail_id == object::id(&orderbookEntry)) {
+                } else if(*parent_limit_tail_id == object::id(orderbookEntry)) {
                     parent_limit.tail = orderbookEntry.previous;
                 };
-
-                remove_order_from_store(orderbookEntry);
-            } else {
-                 remove_order_from_store(orderbookEntry);
             };
     }
 
@@ -732,8 +820,31 @@ module orderbookmodule::orders {
         }
     }
 
+    public fun get_ask_wallet_amount<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, ctx: &mut TxContext): u64 {
+        if(table::contains(&orderbook.asset_b, tx_context::sender(ctx))) {
+            return balance::value(table::borrow(&orderbook.asset_b, tx_context::sender(ctx)))
+        } else {
+            return 0_u64
+        }
+    }
+
     public fun get_bid_order_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, index: u64): (ID, ID, Option<ID>, Option<ID>, u64, u64,u64, address) {
         let obEntry = vector::borrow(&orderbook.bids, index);
+
+        return (
+            object::uid_to_inner(&obEntry.id),
+            obEntry.parent_limit,
+            obEntry.next,
+            obEntry.previous,
+            obEntry.current.price,
+            obEntry.current.initial_quantity,
+            obEntry.current.current_quantity,
+            obEntry.current.user,
+        )
+    }
+
+    public fun get_ask_order_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, index: u64): (ID, ID, Option<ID>, Option<ID>, u64, u64,u64, address) {
+        let obEntry = vector::borrow(&orderbook.asks, index);
 
         return (
             object::uid_to_inner(&obEntry.id),
@@ -754,6 +865,29 @@ module orderbookmodule::orders {
             limit.head,
             limit.tail,
         )
+    }
+
+    public fun get_ask_limit_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, id: ID): (u64, Option<ID>, Option<ID>) {
+        let limit = table::borrow(&orderbook.ask_limits, id);
+        return (
+            limit.price,
+            limit.head,
+            limit.tail,
+        )
+    }
+
+    #[test_only]
+    public fun get_user_balance<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, theguy: address): u64 {
+        let user_balance = table::borrow(&orderbook.asset_a, theguy);
+        
+        return balance::value(user_balance)
+    }
+
+    #[test_only]
+    public fun get_user_asset_b_balance<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, theguy: address): u64 {
+        let user_balance = table::borrow(&orderbook.asset_b, theguy);
+        
+        return balance::value(user_balance)
     }
 
     #[test_only]
@@ -782,7 +916,7 @@ module orderbookmodule::orders_tests {
 
     #[test] fun test_add_order() {
         let scenario = scenario();
-        test_add_order_(&mut scenario);
+        test_add_bid_order_(&mut scenario);
         test::end(scenario);
     }
 
@@ -792,8 +926,20 @@ module orderbookmodule::orders_tests {
         test::end(scenario);
     }
 
+    #[test] fun test_add_ask() {
+        let scenario = scenario();
+        test_add_ask_order_(&mut scenario);
+        test::end(scenario);
+    }
+
+    #[test] fun test_remove_ask() {
+        let scenario = scenario();
+        test_remove_ask_order_(&mut scenario);
+        test::end(scenario);
+    }
+
     fun test_init_orderbook_(test: &mut Scenario) {
-        let (owner, _) = people();
+        let (owner, _, _) = people();
 
         next_tx(test, owner);
 
@@ -826,10 +972,10 @@ module orderbookmodule::orders_tests {
         }
     }
 
-    fun test_add_order_(test: &mut Scenario) {
+    fun test_add_bid_order_(test: &mut Scenario) {
         test_init_orderbook_(test);
 
-        let (_, theguy) = people();
+        let (_, theguy, _) = people();
 
         next_tx(test, theguy);
 
@@ -869,21 +1015,117 @@ module orderbookmodule::orders_tests {
     }
 
     fun test_remove_order_(test: &mut Scenario) {
-        test_add_order_(test);
+        test_add_bid_order_(test);
 
-         let (_, theguy) = people();
+         let (_, theguy,_) = people();
 
         next_tx(test, theguy);
+
+        {
         let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-        // debug::
-        let (_orderbook_entry_id, _parent_limit,_next,_previous,_price,_initial_quantity,_current_quantity,_user) = orders::get_bid_order_info(&orderbook, 0);
-           
-        // let obEntry = test::take_shared_by_id<OrderbookEntry>(test, orderbook_entry_id);
-        debug::print(&orderbook);
+        
+        let (orderbook_entry_id, _parent_limit,_next,_previous,_price,_initial_quantity,_current_quantity,_user) = orders::get_bid_order_info(&orderbook, 0);
+        orders::remove_bid_order(orderbook_entry_id, &mut orderbook, ctx(test));
+       
         test::return_shared(orderbook);
-        // test::return_shared(obEntry);
+        };
+
+         next_tx(test, theguy);
+
+        {
+             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            let (bids_len, asks_len, bid_limits_len, ask_limits_len, asset_a_len, asset_b_len) = orders::get_length_fields<ASSET_A, ASSET_B>(&orderbook);
+            let the_guy_balance = orders::get_user_balance(&orderbook, theguy);
+            assert!(bids_len == 0, 0);
+            assert!(asks_len == 0, 0);
+            assert!(bid_limits_len == 0, 0);
+            assert!(ask_limits_len == 0, 0);
+            assert!(asset_a_len == 1, 0);
+            assert!(the_guy_balance == 0, 0);
+            assert!(asset_b_len == 0, 0);
+
+            test::return_shared(orderbook);
+        }
     }
 
+    fun test_add_ask_order_(test: &mut Scenario) {
+        test_init_orderbook_(test);
+
+        let (_, _, thegirl) = people();
+
+        next_tx(test, thegirl);
+
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+           
+            orders::add_ask_order<ASSET_A, ASSET_B>(309_000_000_000, &mut orderbook, mint<ASSET_B>(1_000_000_000 * 10, ctx(test)), ctx(test));
+            
+            let thegirl_wallet_amount = orders::get_ask_wallet_amount(&orderbook, ctx(test));
+            debug::print(&thegirl_wallet_amount);
+            assert!(thegirl_wallet_amount == 10_000_000_000, 0);
+
+            let (orderbook_entry_id, parent_limit,next,previous,price,initial_quantity,current_quantity,user) = orders::get_ask_order_info(&orderbook, 0);
+           
+            assert!(option::is_none(&next), 0);
+            assert!(option::is_none(&previous), 0);
+            assert!(price == 309_000_000_000, 0);
+            assert!(initial_quantity == 10_000_000_000,0);
+            assert!(current_quantity == 10_000_000_000,0);
+            assert!(user == thegirl, 0);
+
+            let (price, head, tail) = orders::get_ask_limit_info<ASSET_A, ASSET_B>(&orderbook, parent_limit);
+            assert!(price == 309_000_000_000, 0);
+            assert!(head == option::some(orderbook_entry_id), 0);
+            assert!(tail == option::some(orderbook_entry_id), 0);
+
+            let (bids_len, asks_len, bid_limits_len, ask_limits_len, asset_a_len, asset_b_len) = orders::get_length_fields<ASSET_A, ASSET_B>(&orderbook);
+
+            assert!(bids_len == 0, 0);
+            assert!(asks_len == 1, 0);
+            assert!(bid_limits_len == 0, 0);
+            assert!(ask_limits_len == 1, 0);
+            assert!(asset_a_len == 0, 0);
+            assert!(asset_b_len == 1, 0);
+
+            test::return_shared(orderbook);
+        }
+    }
+
+    fun test_remove_ask_order_(test: &mut Scenario) {
+        test_add_ask_order_(test);
+
+         let (_, _,thegirl) = people();
+
+        next_tx(test, thegirl);
+
+        {
+        let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+        
+        let (orderbook_entry_id, _parent_limit,_next,_previous,_price,_initial_quantity,_current_quantity,_user) = orders::get_ask_order_info(&orderbook, 0);
+        orders::remove_ask_order(orderbook_entry_id, &mut orderbook, ctx(test));
+       
+        test::return_shared(orderbook);
+        };
+
+         next_tx(test, thegirl);
+
+        {
+             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            let (bids_len, asks_len, bid_limits_len, ask_limits_len, asset_a_len, asset_b_len) = orders::get_length_fields<ASSET_A, ASSET_B>(&orderbook);
+            let the_girl_balance = orders::get_user_asset_b_balance(&orderbook, thegirl);
+            assert!(bids_len == 0, 0);
+            assert!(asks_len == 0, 0);
+            assert!(bid_limits_len == 0, 0);
+            assert!(ask_limits_len == 0, 0);
+            assert!(asset_a_len == 0, 0);
+            assert!(the_girl_balance == 0, 0);
+            assert!(asset_b_len == 1, 0);
+
+            test::return_shared(orderbook);
+        }
+    }
+
+
     fun scenario(): Scenario { test::begin(@0x1) }
-    fun people(): (address, address) { (@0xBEEF, @0x1337) }
+    fun people(): (address, address, address) { (@0xBEEF, @0x1337, @0xcafe) }
 }
