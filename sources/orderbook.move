@@ -607,21 +607,27 @@ module orderbookmodule::orders {
 
                     asks_count = asks_count + 1; // new add
                 } else {
+                    debug::print(&404);
                     let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
-                    let bidder_usdt = (current_bid.current.current_quantity / current_bid.current.price) * current_ask.current.price; // todo return delta to bidder
+                    let bidder_usdt = (current_bid.current.current_quantity / current_ask.current.price) * current_ask.current.price; // todo return delta to bidder
                     let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
                    
-                    if(balance::value(bidder_usdt_wallet) >= bidder_usdt &&  balance::value(asker_sui_wallet) >= (current_bid.current.current_quantity / current_bid.current.price)) {
+                    if(balance::value(bidder_usdt_wallet) >= current_bid.current.current_quantity &&  balance::value(asker_sui_wallet) >= (current_bid.current.current_quantity / current_bid.current.price)) {
                         let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
-                        let asset_b_to_change = balance::split(asker_sui_wallet, (current_bid.current.current_quantity / current_bid.current.price));
+                        let asset_b_to_change = balance::split(asker_sui_wallet, (current_bid.current.current_quantity / current_ask.current.price));
                         public_transfer(coin::from_balance<AssetA>(asset_a_to_change, ctx), current_ask.current.user);
                         public_transfer(coin::from_balance<AssetB>(asset_b_to_change, ctx), current_bid.current.user);
+
+                        if((current_bid.current.current_quantity - bidder_usdt) > 0) {
+                            let asset_a_to_return = balance::split(bidder_usdt_wallet, current_bid.current.current_quantity - bidder_usdt);
+                            public_transfer(coin::from_balance<AssetA>(asset_a_to_return, ctx), current_bid.current.user);
+                        }
                     } else {
                          debug::print(&7777777777773);
                         // return error because sth wrong with wallets
                     };
                 
-                    current_ask.current.current_quantity = current_ask.current.current_quantity - (current_bid.current.current_quantity / current_bid.current.price);
+                    current_ask.current.current_quantity = current_ask.current.current_quantity - (current_bid.current.current_quantity / current_ask.current.price);
                     current_bid.current.current_quantity = 0;
                     if(option::is_none(&current_bid.next)) {
                         current_bid_idx = option::none();
@@ -973,11 +979,11 @@ module orderbookmodule::orders_tests {
     //     test::end(scenario);
     // }
 
-    // #[test] fun test_ask_bids_match() {
-    //     let scenario = scenario();
-    //     test_ask_bids_match_(&mut scenario);
-    //     test::end(scenario);
-    // }
+    #[test] fun test_ask_bids_match() {
+        let scenario = scenario();
+        test_ask_bids_match_(&mut scenario);
+        test::end(scenario);
+    }
 
     // #[test] fun test_one_bid_ask_match() {
     //     let scenario = scenario();
@@ -997,11 +1003,11 @@ module orderbookmodule::orders_tests {
     //     test::end(scenario);
     // }
 
-    #[test] fun test_another_bid_ask_match() {
-        let scenario = scenario();
-        test_another_bid_ask_match_(&mut scenario);
-        test::end(scenario);
-    }
+    // #[test] fun test_another_bid_ask_match() {
+    //     let scenario = scenario();
+    //     test_another_bid_ask_match_(&mut scenario);
+    //     test::end(scenario);
+    // }
 
     fun test_init_orderbook_(test: &mut Scenario) {
         let (owner, _, _, _, _) = people();
@@ -1275,6 +1281,14 @@ module orderbookmodule::orders_tests {
             orders::add_ask_order<ASSET_A, ASSET_B>(306, &mut orderbook, mint<ASSET_B>(1_000_000_000 * 4, ctx(test)), ctx(test));
             test::return_shared(orderbook);
         };
+
+        next_tx(test, john);
+
+         {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            debug::print(&orderbook);
+            test::return_shared(orderbook);
+        };
     }
 
     fun test_one_bid_ask_match_(test: &mut Scenario) {
@@ -1451,9 +1465,6 @@ module orderbookmodule::orders_tests {
             assert!(coin::value(&coin) == 1_236_000_000_000, 1);
             transfer::public_transfer(coin, ivan);
 
-            let john_wallet_amount = orders::get_bid_wallet_amount(&orderbook, ctx(test));
-            assert!(john_wallet_amount == 0, 0);
-
             test::return_shared(orderbook);
         };
 
@@ -1499,7 +1510,40 @@ module orderbookmodule::orders_tests {
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
             orders::add_bid_order<ASSET_A, ASSET_B>(311, &mut orderbook, mint<ASSET_A>(311 * 1_000_000_000 * 3, ctx(test)), ctx(test));
-            debug::print(&orderbook);
+            test::return_shared(orderbook);
+        };
+
+        next_tx(test, john);
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+
+            let john_wallet_amount = orders::get_bid_wallet_amount(&orderbook, ctx(test));
+            assert!(john_wallet_amount == 309_000_000_000, 0);
+
+            let coin = test::take_from_sender<Coin<ASSET_A>>(test);
+            assert!(coin::value(&coin) == 110, 1);
+            transfer::public_transfer(coin, john);
+
+            let coin = test::take_from_sender<Coin<ASSET_B>>(test);
+            // debug::print(&coin::value(&coin));
+            assert!(coin::value(&coin) == 3009677419, 1);
+            transfer::public_transfer(coin, john);
+            
+            test::return_shared(orderbook);
+        };
+
+        next_tx(test, ivan);
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+
+            let ivan_wallet_amount = orders::get_ask_wallet_amount(&orderbook, ctx(test));
+            assert!(ivan_wallet_amount == 1_990_322_581, 0);
+            // debug::print(&ivan_wallet_amount);
+
+            let coin = test::take_from_sender<Coin<ASSET_A>>(test);
+            assert!(coin::value(&coin) == 932_999_999_890, 1);
+            transfer::public_transfer(coin, ivan);
+            
             test::return_shared(orderbook);
         };
     }
