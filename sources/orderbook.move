@@ -107,6 +107,7 @@ module orderbookmodule::orders {
     //        remove_order_from_store(orderbookEntry);
     //     }
     // }
+    //
 
     fun remove_order_from_store(orderbookEntry: OrderbookEntry){
         let OrderbookEntry {
