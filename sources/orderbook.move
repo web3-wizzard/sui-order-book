@@ -41,8 +41,8 @@ module orderbookmodule::orders {
         id: UID,
         bids: vector<OrderbookEntry>,
         asks: vector<OrderbookEntry>,
-        bid_limits: Table<ID, Limit>,
-        ask_limits: Table<ID, Limit>,
+        bid_limits: Table<u64, Limit>,
+        ask_limits: Table<u64, Limit>,
         asset_a: Table<address, Balance<AssetA>>,
         asset_b: Table<address, Balance<AssetB>>
     }
@@ -64,14 +64,14 @@ module orderbookmodule::orders {
             id, 
             bids: vector::empty<OrderbookEntry>(),
             asks: vector::empty<OrderbookEntry>(),
-            bid_limits: table::new<ID, Limit>(ctx),
-            ask_limits: table::new<ID, Limit>(ctx),
+            bid_limits: table::new<u64, Limit>(ctx),
+            ask_limits: table::new<u64, Limit>(ctx),
             asset_a: table::new<address, Balance<AssetA>>(ctx),
             asset_b: table::new<address, Balance<AssetB>>(ctx),
         })
     }
 
-    // need to handle initial quantity
+    // need to handle initial quantity blya o chem eto ya
     public entry fun add_bid_order<AssetA, AssetB>(price: u64, orderBook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetA>,ctx: &mut TxContext) {
         let base_limit = create_limit(price, ctx);
         
@@ -319,8 +319,8 @@ module orderbookmodule::orders {
     //     deal_with_limit(&mut orderBook.ask_limits, orderbookEntry);
     // }
 
-    fun deal_with_limit(limits: &mut Table<ID, Limit>, orderbookEntry: &OrderbookEntry) {
-        let parent_limit = table::borrow_mut(limits, orderbookEntry.parent_limit);
+    fun deal_with_limit(limits: &mut Table<u64, Limit>, orderbookEntry: &OrderbookEntry) {
+        let parent_limit = table::borrow_mut(limits, orderbookEntry.current.price);
 
             if(option::is_some(&parent_limit.head) && option::is_some(&parent_limit.tail)) {
                 let parent_limit_head_id = option::borrow(&parent_limit.head);
@@ -330,7 +330,7 @@ module orderbookmodule::orders {
                     parent_limit.head = option::none();
                     parent_limit.tail = option::none();
 
-                    let parent_limit_to_delete = table::remove(limits, orderbookEntry.parent_limit);
+                    let parent_limit_to_delete = table::remove(limits, orderbookEntry.current.price);
                     remove_parent_limit_from_store(parent_limit_to_delete);
                 } else if(*parent_limit_head_id == object::id(orderbookEntry)) {
                     parent_limit.head = orderbookEntry.next;
@@ -401,30 +401,23 @@ module orderbookmodule::orders {
         }
     }
 
-    // TODO лимиты должны вязаться на цену а не на айдишник. нужно переделать и написать тесты что некст и превиоус работают нормально
+   
     fun add_bid_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderBook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, ctx: &mut TxContext) {
-        debug::print(&11);
-        debug::print(&orderBook.bid_limits);
-        if(table::contains(&orderBook.bid_limits, object::id(&limit))) {
-            debug::print(&12);
+        if(table::contains(&orderBook.bid_limits, limit.price)) {
             let new_entry = create_new_entry(order, object::id(&limit), is_by_side, ctx);
-            if(option::is_none(&limit.tail)) {
-                limit.head = option::some(object::id(&new_entry));
-                limit.tail = option::some(object::id(&new_entry));
-            } else {
-                let tail_proxy_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&limit.tail));
-                debug::print(&43431);
-                debug::print(&option::is_some(&tail_proxy_vec_idx));
-                debug::print(&43431);
-                
-                if(option::is_some(&tail_proxy_vec_idx)) {
-                    let tail_proxy_idx = option::borrow(&tail_proxy_vec_idx);
-                    let tail_proxy = vector::borrow_mut(&mut orderBook.bids, *tail_proxy_idx);
-                    new_entry.previous = option::some(object::id(tail_proxy));
-                    tail_proxy.next = option::some(object::id(&new_entry));
-                    limit.tail = option::some(object::id(&new_entry));
-                }                
+           
+            let existing_limit = table::borrow_mut(&mut orderBook.bid_limits, limit.price);
+           
+           let tail_proxy_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&existing_limit.tail));
+            
+            if(option::is_some(&tail_proxy_vec_idx)) {
+                let tail_proxy_idx = option::borrow(&tail_proxy_vec_idx);
+                let tail_proxy = vector::borrow_mut(&mut orderBook.bids, *tail_proxy_idx);
+                new_entry.previous = option::some(object::id(tail_proxy));
+                tail_proxy.next = option::some(object::id(&new_entry));
+                existing_limit.tail = option::some(object::id(&new_entry));
             };
+         
             vector::push_back(&mut orderBook.bids, new_entry);
              let Limit {
                 id,
@@ -437,7 +430,7 @@ module orderbookmodule::orders {
             let new_entry = create_new_entry(order, object::id(&limit),is_by_side, ctx);
             limit.head = option::some(object::id(&new_entry));
             limit.tail = option::some(object::id(&new_entry));
-            table::add(&mut orderBook.bid_limits, object::id(&limit), limit);
+            table::add(&mut orderBook.bid_limits, limit.price, limit);
             vector::push_back(&mut orderBook.bids, new_entry);
         };
         match(orderBook, ctx);
@@ -457,22 +450,21 @@ module orderbookmodule::orders {
     }
 
     fun add_ask_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderBook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, ctx: &mut TxContext) {
-        if(table::contains(&orderBook.ask_limits, object::id(&limit))) {
-            let new_entry = create_new_entry(order, object::id(&limit),is_by_side, ctx);
-            if(option::is_none(&limit.tail)) {
-                limit.head = option::some(object::id(&new_entry));
-                limit.tail = option::some(object::id(&new_entry));
-            } else {
-                let tail_proxy_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&limit.tail));
-
-                if(option::is_some(&tail_proxy_vec_idx)) {
-                    let tail_proxy_idx = option::borrow(&tail_proxy_vec_idx);
-                    let tail_proxy = vector::borrow_mut(&mut orderBook.asks, *tail_proxy_idx);
-                    new_entry.previous = option::some(object::id(tail_proxy));
-                    tail_proxy.next = option::some(object::id(&new_entry));
-                    limit.tail = option::some(object::id(&new_entry));
-                }    
+        if(table::contains(&orderBook.ask_limits, limit.price)) {
+            let new_entry = create_new_entry(order, object::id(&limit), is_by_side, ctx);
+           
+            let existing_limit = table::borrow_mut(&mut orderBook.ask_limits, limit.price);
+           
+           let tail_proxy_vec_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&existing_limit.tail));
+            
+            if(option::is_some(&tail_proxy_vec_idx)) {
+                let tail_proxy_idx = option::borrow(&tail_proxy_vec_idx);
+                let tail_proxy = vector::borrow_mut(&mut orderBook.asks, *tail_proxy_idx);
+                new_entry.previous = option::some(object::id(tail_proxy));
+                tail_proxy.next = option::some(object::id(&new_entry));
+                existing_limit.tail = option::some(object::id(&new_entry));
             };
+         
             vector::push_back(&mut orderBook.asks, new_entry);
              let Limit {
                 id,
@@ -480,22 +472,23 @@ module orderbookmodule::orders {
                 head: _,
                 tail: _,
             } = limit;
-            object::delete(id);
+            object::delete(id)
         } else {
             let new_entry = create_new_entry(order, object::id(&limit),is_by_side, ctx);
             limit.head = option::some(object::id(&new_entry));
             limit.tail = option::some(object::id(&new_entry));
-            table::add(&mut orderBook.ask_limits, object::id(&limit), limit);
+            table::add(&mut orderBook.ask_limits, limit.price, limit);
             vector::push_back(&mut orderBook.asks, new_entry);
         };
-
         match(orderBook, ctx);
     }
 
     fun match<AssetA, AssetB>(orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
         sort_vec(&mut orderBook.asks);
         sort_vec(&mut orderBook.bids);
+    
         vector::reverse(&mut orderBook.bids);
+      
 
         let bids_count = 0;
         let asks_count = 0;
@@ -517,7 +510,7 @@ module orderbookmodule::orders {
             };
 
             let ask_loop = true;
-            debug::print(&4341);
+        
             while(ask_loop) {
                 let ask = vector::borrow(&orderBook.asks, asks_count);
                 if(ask.current.price == 0) {
@@ -539,10 +532,10 @@ module orderbookmodule::orders {
                 break
             };
 
-            let parent_bid_limit_id = vector::borrow(&orderBook.bids, bids_count).parent_limit;
-            let parent_bid_limit = table::borrow_mut(&mut orderBook.bid_limits, parent_bid_limit_id);
-            let parent_ask_limit_id = vector::borrow(&orderBook.asks, asks_count).parent_limit;
-            let parent_ask_limit = table::borrow_mut(&mut orderBook.ask_limits, parent_ask_limit_id);
+            let parent_bid_limit_price = vector::borrow(&orderBook.bids, bids_count).current.price;
+            let parent_bid_limit = table::borrow_mut(&mut orderBook.bid_limits, parent_bid_limit_price);
+            let parent_ask_limit_price = vector::borrow(&orderBook.asks, asks_count).current.price;
+            let parent_ask_limit = table::borrow_mut(&mut orderBook.ask_limits, parent_ask_limit_price);
             
             let current_bid_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&parent_bid_limit.head));
             let current_ask_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&parent_ask_limit.head));
@@ -615,7 +608,6 @@ module orderbookmodule::orders {
 
                     asks_count = asks_count + 1; // new add
                 } else {
-                    debug::print(&404);
                     let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
                     let bidder_usdt = (current_bid.current.current_quantity / current_ask.current.price) * current_ask.current.price; // todo return delta to bidder
                     let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
@@ -647,33 +639,42 @@ module orderbookmodule::orders {
             };            
         };
         // stopped here
-        let bids_count2 = 0;
-        let bid_limits_vec = vector::empty<ID>();
-        let asks_count2 = 0;
-        let ask_limits_vec = vector::empty<ID>();
 
-        let bid_limits_to_delete = vector::empty<ID>();
+        let bids_count2 = 0;
+        let bid_limits_vec = vector::empty<u64>();
+        let asks_count2 = 0;
+        let ask_limits_vec = vector::empty<u64>();
+
+        let bid_limits_to_delete = vector::empty<u64>();
         let bid_orders_to_delete = vector::empty<ID>();
 
-        let ask_limits_to_delete = vector::empty<ID>();
+        let ask_limits_to_delete = vector::empty<u64>();
         let ask_orders_to_delete = vector::empty<ID>();
 
-        while(bids_count2 < vector::length(&orderBook.bids) && vector::borrow(&orderBook.bids, bids_count2).current.current_quantity == 0) {
-            vector::push_back(&mut bid_limits_vec, vector::borrow(&orderBook.bids, bids_count2).parent_limit);
+        while(bids_count2 < vector::length(&orderBook.bids)) {
+            if(vector::borrow(&orderBook.bids, bids_count2).current.current_quantity == 0) {
+                vector::push_back(&mut bid_limits_vec, vector::borrow(&orderBook.bids, bids_count2).current.price); // todo here we can push duplicated so we need to ensure tht we push price only once
+            };
+            
             bids_count2 = bids_count2 + 1;
         };
-
-        while(asks_count2 < vector::length(&orderBook.asks) && vector::borrow(&orderBook.asks, asks_count2).current.current_quantity == 0) {
-            vector::push_back(&mut ask_limits_vec, vector::borrow(&orderBook.asks, asks_count2).parent_limit);
+        
+        while(asks_count2 < vector::length(&orderBook.asks)) { 
+            if(vector::borrow(&orderBook.asks, asks_count2).current.current_quantity == 0) {
+                vector::push_back(&mut ask_limits_vec, vector::borrow(&orderBook.asks, asks_count2).current.price);
+            }
+            
             asks_count2 = asks_count2 + 1;
         };
+        debug::print(&bid_limits_vec);
 
         let i = 0; 
+        
         while (i < vector::length(&bid_limits_vec)) {
-            let bid_limit_id = vector::borrow(&bid_limits_vec, i);
-            let limit = table::borrow_mut(&mut orderBook.bid_limits, *bid_limit_id);
+            let bid_limit_price = vector::borrow(&bid_limits_vec, i);
+            let limit = table::borrow_mut(&mut orderBook.bid_limits, *bid_limit_price);
             let run_bid_limit = true;
-
+           
             while(run_bid_limit) {
                 if(option::is_some<ID>(&limit.head)) {
                     let order_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&limit.head));
@@ -690,12 +691,14 @@ module orderbookmodule::orders {
                             let next_order = vector::borrow_mut(&mut orderBook.bids, *option::borrow(&next_order_idx));
                             next_order.previous = option::none();
                         } else if (option::is_some(&limit.tail) && option::borrow(&limit.head) == option::borrow(&limit.tail)) {
-                            vector::push_back(&mut bid_limits_to_delete, *bid_limit_id);
-
+                            vector::push_back(&mut bid_limits_to_delete, *bid_limit_price);
+                            
                             run_bid_limit = false;
                         };
                         
                         vector::push_back(&mut bid_orders_to_delete, *option::borrow(&limit.head));
+                    } else {
+                        run_bid_limit = false;
                     }
                 }
                 
@@ -703,12 +706,12 @@ module orderbookmodule::orders {
             
             i = i + 1;
         };
-
+       
 
         let p = 0; 
         while (p < vector::length(&ask_limits_vec)) {
-            let ask_limit_id = vector::borrow(&ask_limits_vec, p);
-            let limit = table::borrow_mut(&mut orderBook.ask_limits, *ask_limit_id);
+            let ask_limit_price = vector::borrow(&ask_limits_vec, p);
+            let limit = table::borrow_mut(&mut orderBook.ask_limits, *ask_limit_price);
             let run_ask_limit = true;
 
             while(run_ask_limit) {
@@ -727,12 +730,14 @@ module orderbookmodule::orders {
                             let next_order = vector::borrow_mut(&mut orderBook.asks, *option::borrow(&next_order_idx));
                             next_order.previous = option::none();
                         } else if (option::is_some(&limit.tail) && option::borrow(&limit.head) == option::borrow(&limit.tail)) {
-                            vector::push_back(&mut ask_limits_to_delete, *ask_limit_id);
+                            vector::push_back(&mut ask_limits_to_delete, *ask_limit_price);
 
                             run_ask_limit = false;
                         };
                         
                         vector::push_back(&mut ask_orders_to_delete, *option::borrow(&limit.head));
+                    } else {
+                        run_ask_limit = false;
                     }
                 }
                 
@@ -852,8 +857,8 @@ module orderbookmodule::orders {
         return (
             vector::length<OrderbookEntry>(&orderbook.bids),
             vector::length<OrderbookEntry>(&orderbook.asks),
-            table::length<ID, Limit>(&orderbook.bid_limits),
-            table::length<ID, Limit>(&orderbook.ask_limits),
+            table::length<u64, Limit>(&orderbook.bid_limits),
+            table::length<u64, Limit>(&orderbook.ask_limits),
             table::length<address, Balance<AssetA>>(&orderbook.asset_a),
             table::length<address, Balance<AssetB>>(&orderbook.asset_b),
         )
@@ -875,12 +880,12 @@ module orderbookmodule::orders {
         }
     }
 
-    public fun get_bid_order_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, index: u64): (ID, ID, Option<ID>, Option<ID>, u64, u64,u64, address) {
+    public fun get_bid_order_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, index: u64): (ID, u64, Option<ID>, Option<ID>, u64, u64,u64, address) {
         let obEntry = vector::borrow(&orderbook.bids, index);
 
         return (
             object::uid_to_inner(&obEntry.id),
-            obEntry.parent_limit,
+            obEntry.current.price,
             obEntry.next,
             obEntry.previous,
             obEntry.current.price,
@@ -890,12 +895,12 @@ module orderbookmodule::orders {
         )
     }
 
-    public fun get_ask_order_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, index: u64): (ID, ID, Option<ID>, Option<ID>, u64, u64,u64, address) {
+    public fun get_ask_order_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, index: u64): (ID, u64, Option<ID>, Option<ID>, u64, u64,u64, address) {
         let obEntry = vector::borrow(&orderbook.asks, index);
 
         return (
             object::uid_to_inner(&obEntry.id),
-            obEntry.parent_limit,
+            obEntry.current.price,
             obEntry.next,
             obEntry.previous,
             obEntry.current.price,
@@ -905,7 +910,7 @@ module orderbookmodule::orders {
         )
     }
 
-    public fun get_bid_limit_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, id: ID): (u64, Option<ID>, Option<ID>) {
+    public fun get_bid_limit_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, id: u64): (u64, Option<ID>, Option<ID>) {
         let limit = table::borrow(&orderbook.bid_limits, id);
         return (
             limit.price,
@@ -914,7 +919,7 @@ module orderbookmodule::orders {
         )
     }
 
-    public fun get_ask_limit_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, id: ID): (u64, Option<ID>, Option<ID>) {
+    public fun get_ask_limit_info<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>, id: u64): (u64, Option<ID>, Option<ID>) {
         let limit = table::borrow(&orderbook.ask_limits, id);
         return (
             limit.price,
@@ -944,8 +949,14 @@ module orderbookmodule::orders {
 
     #[test_only]
     public fun test<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>) {
-        debug::print(&option::is_none(&vector::borrow(&orderbook.bids, 0).next));
-        // debug::print(vector::borrow(&orderbook.bids, 1));
+        // debug::print(vector::borrow(&orderbook.bids, 0));
+        debug::print(vector::borrow(&orderbook.bids, 1));
+        // debug::print(table::borrow(&orderbook.bid_limits, 309));
+    }
+
+    #[test_only]
+    public fun print_bid_limits<AssetA, AssetB>(orderbook: &Orderbook<AssetA, AssetB>) {
+        debug::print(&orderbook.bid_limits);
     }
 }
 
@@ -963,11 +974,11 @@ module orderbookmodule::orders_tests {
     use std::debug;
     // use std::vector::{Self};
 
-    #[test] fun test_init_orderbook() {
-        let scenario = scenario();
-        test_init_orderbook_(&mut scenario);
-        test::end(scenario);
-    }
+    // #[test] fun test_init_orderbook() {
+    //     let scenario = scenario();
+    //     test_init_orderbook_(&mut scenario);
+    //     test::end(scenario);
+    // }
 
     // #[test] fun test_add_order() {
     //     let scenario = scenario();
@@ -993,6 +1004,7 @@ module orderbookmodule::orders_tests {
     //     test::end(scenario);
     // }
 
+  
     #[test] fun test_ask_bids_match() {
         let scenario = scenario();
         test_ask_bids_match_(&mut scenario);
@@ -1072,7 +1084,7 @@ module orderbookmodule::orders_tests {
             let theguy_wallet_amount = orders::get_bid_wallet_amount(&orderbook, ctx(test));
             assert!(theguy_wallet_amount == 309_000_000_000_0, 0);
 
-            let (orderbook_entry_id, parent_limit,next,previous,price,initial_quantity,current_quantity,user) = orders::get_bid_order_info(&orderbook, 0);
+            let (orderbook_entry_id, parent_limit_price,next,previous,price,initial_quantity,current_quantity,user) = orders::get_bid_order_info(&orderbook, 0);
            
             assert!(option::is_none(&next), 0);
             assert!(option::is_none(&previous), 0);
@@ -1081,7 +1093,8 @@ module orderbookmodule::orders_tests {
             assert!(current_quantity == 309_000_000_000_0,0);
             assert!(user == theguy, 0);
 
-            let (price, head, tail) = orders::get_bid_limit_info<ASSET_A, ASSET_B>(&orderbook, parent_limit);
+            // todo parent_limit_price is the same as price
+            let (price, head, tail) = orders::get_bid_limit_info<ASSET_A, ASSET_B>(&orderbook, parent_limit_price);
             assert!(price == 309, 0);
             assert!(head == option::some(orderbook_entry_id), 0);
             assert!(tail == option::some(orderbook_entry_id), 0);
@@ -1149,7 +1162,8 @@ module orderbookmodule::orders_tests {
             
             assert!(thegirl_wallet_amount == 10_000_000_000, 0);
 
-            let (orderbook_entry_id, parent_limit,next,previous,price,initial_quantity,current_quantity,user) = orders::get_ask_order_info(&orderbook, 0);
+            // todo parent_limit_price is the same as price
+            let (orderbook_entry_id, parent_limit_price,next,previous,price,initial_quantity,current_quantity,user) = orders::get_ask_order_info(&orderbook, 0);
            
             assert!(option::is_none(&next), 0);
             assert!(option::is_none(&previous), 0);
@@ -1158,7 +1172,7 @@ module orderbookmodule::orders_tests {
             assert!(current_quantity == 10_000_000_000,0);
             assert!(user == thegirl, 0);
 
-            let (price, head, tail) = orders::get_ask_limit_info<ASSET_A, ASSET_B>(&orderbook, parent_limit);
+            let (price, head, tail) = orders::get_ask_limit_info<ASSET_A, ASSET_B>(&orderbook, parent_limit_price);
             assert!(price == 309, 0);
             assert!(head == option::some(orderbook_entry_id), 0);
             assert!(tail == option::some(orderbook_entry_id), 0);
@@ -1213,7 +1227,7 @@ module orderbookmodule::orders_tests {
     fun test_ask_bids_match_(test: &mut Scenario) {
         test_init_orderbook_(test);
 
-        let (_, john, ivan, _julia, _alex) = people();
+        let (_, john, ivan, julia, alex) = people();
 
         next_tx(test, john);
 
@@ -1232,53 +1246,55 @@ module orderbookmodule::orders_tests {
             test::return_shared(orderbook);
         };
 
-        // next_tx(test, john);
+        next_tx(test, john);
 
-        // {
-        //     let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-        //     orders::add_bid_order<ASSET_A, ASSET_B>(308, &mut orderbook, mint<ASSET_A>(308 * 1_000_000_000 * 5, ctx(test)), ctx(test));
-        //     test::return_shared(orderbook);
-        // };
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            orders::add_bid_order<ASSET_A, ASSET_B>(308, &mut orderbook, mint<ASSET_A>(308 * 1_000_000_000 * 5, ctx(test)), ctx(test));
+            test::return_shared(orderbook);
+        };
 
-        // next_tx(test, ivan);
+        next_tx(test, ivan);
 
-        // {
-        //     let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-        //     orders::add_bid_order<ASSET_A, ASSET_B>(307, &mut orderbook, mint<ASSET_A>(307 * 1_000_000_000 * 1, ctx(test)), ctx(test));
-        //     test::return_shared(orderbook);
-        // };
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            orders::add_bid_order<ASSET_A, ASSET_B>(307, &mut orderbook, mint<ASSET_A>(307 * 1_000_000_000 * 1, ctx(test)), ctx(test));
+            test::return_shared(orderbook);
+        };
 
-        // next_tx(test, julia);
+        next_tx(test, julia);
 
-        // {
-        //     let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-        //     orders::add_ask_order<ASSET_A, ASSET_B>(311, &mut orderbook, mint<ASSET_B>(1_000_000_000 * 8, ctx(test)), ctx(test));
-        //     test::return_shared(orderbook);    
-        // };
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            orders::add_ask_order<ASSET_A, ASSET_B>(311, &mut orderbook, mint<ASSET_B>(1_000_000_000 * 8, ctx(test)), ctx(test));
+            test::return_shared(orderbook);    
+        };
 
-        //  next_tx(test, alex);
+         next_tx(test, alex);
 
-        // {
-        //     let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-        //     // orders::add_ask_order<ASSET_A, ASSET_B>(309, &mut orderbook, mint<ASSET_B>(1_000_000_000 * 12, ctx(test)), ctx(test));
-        //     orders::test(&orderbook);
-        //     test::return_shared(orderbook);
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+             debug::print(&9898);
+            orders::add_ask_order<ASSET_A, ASSET_B>(309, &mut orderbook, mint<ASSET_B>(1_000_000_000 * 12, ctx(test)), ctx(test));
+           
+            // orders::test(&orderbook);
+            test::return_shared(orderbook);
       
-        // };
+        };
 
         // intermediate check 
-        // next_tx(test, alex);
+        next_tx(test, alex);
 
-        // {
-        //     let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+        {
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
 
-        //     let (bids_len, asks_len, bid_limits_len, ask_limits_len, asset_a_len, asset_b_len) = orders::get_length_fields<ASSET_A, ASSET_B>(&orderbook);
-        //     assert!(bids_len == 3, 0);
-        //     assert!(asks_len == 1, 0);
-        //     assert!(bid_limits_len == 3, 0);
-        //     assert!(ask_limits_len == 1, 0);
-        //     assert!(asset_a_len == 2, 0);
-        //     assert!(asset_b_len == 2, 0);
+            let (_bids_len, asks_len, _bid_limits_len, _ask_limits_len, _asset_a_len, _asset_b_len) = orders::get_length_fields<ASSET_A, ASSET_B>(&orderbook);
+            // assert!(bids_len == 4, 0);
+            assert!(asks_len == 1, 0);
+            // assert!(bid_limits_len == 3, 0);
+            // assert!(ask_limits_len == 1, 0);
+            // assert!(asset_a_len == 2, 0);
+            // assert!(asset_b_len == 2, 0);
 
         //     let alex_wallet_amount = orders::get_ask_wallet_amount(&orderbook, ctx(test));
         //     assert!(alex_wallet_amount == 0, 0);
@@ -1287,9 +1303,9 @@ module orderbookmodule::orders_tests {
         //     debug::print(&coin::value(&coin));
         //     // assert!(coin::value(&coin) == 3_708_000_000_000, 1);
         //     transfer::public_transfer(coin, ivan);
-        //     debug::print(&orderbook);
-        //     test::return_shared(orderbook);
-        // }
+            // debug::print(&orderbook);
+            test::return_shared(orderbook);
+        }
 
 
 
