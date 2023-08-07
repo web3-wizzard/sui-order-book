@@ -92,38 +92,6 @@ module orderbookmodule::orders {
         add_bid_order_to_orderbook(order, base_limit, orderBook, true, ctx);
     }
 
-    fun remove_order_from_store(orderbookEntry: OrderbookEntry){
-        let OrderbookEntry {
-                    id,
-                    current,
-                    is_by_side: _,
-                    parent_limit: _,
-                    next: _,
-                    previous: _,
-                } = orderbookEntry;
-                object::delete(id);
-                
-                let Order {
-                    id,
-                    price: _,
-                    is_by_side: _,
-                    initial_quantity: _,
-                    current_quantity: _,
-                    user: _,
-                } = current;
-                object::delete(id);
-    }
-
-    fun remove_parent_limit_from_store(limit: Limit) {
-        let Limit {
-                        id,
-                        price: _,
-                        head: _,
-                        tail: _,
-                    } = limit;
-         object::delete(id)            
-    }
-
 //todo make private
     public fun remove_bid_order<AssetA, AssetB>(orderbookEntryID: ID, orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
         let ob_entry_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, &orderbookEntryID);
@@ -166,7 +134,7 @@ module orderbookmodule::orders {
     public fun refund_after_remove<T>(entries: &mut vector<OrderbookEntry>, ob_entry_idx: Option<u64>, asset: &mut Table<address, Balance<T>>, ctx: &mut TxContext) {
         let orderbookEntry = vector::remove(entries, *option::borrow(&ob_entry_idx));
         let order_curent_quantity = orderbookEntry.current.current_quantity;
-        remove_order_from_store(orderbookEntry);
+        delete_orderbook_entry(orderbookEntry);
         let bidder_sui_wallet = table::borrow_mut(asset, tx_context::sender(ctx));
 
         if(balance::value(bidder_sui_wallet) >= order_curent_quantity) {
@@ -230,7 +198,7 @@ module orderbookmodule::orders {
                     parent_limit.tail = option::none();
 
                     let parent_limit_to_delete = table::remove(limits, orderbookEntry.current.price);
-                    remove_parent_limit_from_store(parent_limit_to_delete);
+                    delete_limit(parent_limit_to_delete);
                 } else if(*parent_limit_head_id == object::id(orderbookEntry)) {
                     parent_limit.head = orderbookEntry.next;
                 } else if(*parent_limit_tail_id == object::id(orderbookEntry)) {
@@ -328,19 +296,22 @@ module orderbookmodule::orders {
             };
          
             vector::push_back(entries, new_entry);
-             let Limit {
-                id,
-                price: _,
-                head: _,
-                tail: _,
-            } = limit;
-            object::delete(id)
+            delete_limit(limit);
         } else {
             let new_entry = create_new_entry(order, object::id(&limit),is_by_side, ctx);
             limit.head = option::some(object::id(&new_entry));
             limit.tail = option::some(object::id(&new_entry));
             table::add(limits, limit.price, limit);
             vector::push_back(entries, new_entry);
+        };
+    }
+
+    fun join_balance_or_insert<T>(asset_to_transfer: &mut VecMap<address, Balance<T>>, user: address, asset_to_change: Balance<T>) {
+        if(vec_map::contains(asset_to_transfer, &user)) {
+            let user_balance = vec_map::get_mut(asset_to_transfer, &user);
+            balance::join(user_balance, asset_to_change);
+        } else {
+            vec_map::insert(asset_to_transfer, user, asset_to_change);
         };
     }
 
@@ -357,43 +328,101 @@ module orderbookmodule::orders {
         };
     }
 
+    fun transfer_all<T>(asset_transfer: &mut VecMap<address, Balance<T>>, ctx: &mut TxContext) {
+        let x = 0;
+        let asset_a_len = vec_map::size(asset_transfer);
+        while(x < asset_a_len) {
+            let (recepient, asset_to_transfer) = vec_map::pop(asset_transfer);
+                
+            public_transfer(coin::from_balance<T>(asset_to_transfer, ctx), recepient);
+            x = x + 1;
+        }; 
+    }
+
+    fun delete_order_butch(ask_orders_to_delete: vector<ID>, entries: &mut vector<OrderbookEntry>) {
+        let h = 0;
+        while(h < vector::length(&ask_orders_to_delete)) {
+            let order_id = vector::borrow(&ask_orders_to_delete, h);
+            let ask_order_to_delete_idx = get_idx_opt<OrderbookEntry>(entries, order_id);
+            let orderBookEntry = vector::remove(entries, *option::borrow(&ask_order_to_delete_idx));
+
+            delete_orderbook_entry(orderBookEntry);
+            h = h + 1;
+        }
+    }
+
+    fun delete_limit_butch(limits_to_delete: vector<u64>, limits: &mut Table<u64, Limit>) {
+        let y = 0;
+        while(y < vector::length(&limits_to_delete)) {
+            let limit = table::remove(limits, *vector::borrow(&limits_to_delete, y));
+            delete_limit(limit);
+            y = y + 1;
+        };
+    }
+
+    fun delete_limit(limit: Limit) {
+        let Limit {
+            id,
+            price: _,
+            head: _,
+            tail: _,
+        } = limit;
+        object::delete(id);
+    }
+
+    fun delete_order(order: Order) {
+        let Order {
+            id,
+            price: _,
+            is_by_side: _,
+            initial_quantity: _,
+            current_quantity: _,
+            user: _,
+        } = order;
+        object::delete(id);  
+    }
+
+    fun delete_orderbook_entry(orderbookEntry: OrderbookEntry) {
+        let OrderbookEntry {
+            id,
+            current,
+            is_by_side: _,
+            parent_limit: _,
+            next: _,
+            previous: _,
+        } = orderbookEntry;
+        object::delete(id);
+        delete_order(current);
+    }
+    
+    fun get_idx_from_entries(id: Option<ID>, entries: &mut vector<OrderbookEntry>): Option<u64> {
+        if(option::is_none(&id)) {
+            option::none()
+        } else {
+            get_idx_opt<OrderbookEntry>(entries, option::borrow(&id))
+        }
+    }
+
+    fun get_current_entry_idx(entries: &mut vector<OrderbookEntry>, count: u64, limits: &mut Table<u64, Limit>): Option<u64> {
+        let parent_bid_limit_price = vector::borrow(entries, count).current.price;
+        let parent_bid_limit = table::borrow_mut(limits, parent_bid_limit_price);
+
+        get_idx_opt<OrderbookEntry>(entries, option::borrow(&parent_bid_limit.head))
+    }
+
     fun match<AssetA, AssetB>(orderBook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
         sort_vec(&mut orderBook.asks);
         sort_vec(&mut orderBook.bids);
-    
         vector::reverse(&mut orderBook.bids);
         
         let bids_count = 0;
         let asks_count = 0;
 
         if(vector::length(&orderBook.bids) == 0 || vector::length(&orderBook.asks) == 0) {
-            return
+            return;
         };
         
         while (bids_count < vector::length(&orderBook.bids) && asks_count < vector::length(&orderBook.asks)) {
-            let bid_loop = true;
-
-            // this part of code looks strange because price can't be 0? here etheir should e current amount or sth else/ I must to rethink this part of code
-            while(bid_loop) {
-                let bid = vector::borrow(&orderBook.bids, bids_count);
-                if(bid.current.price == 0) {
-                     bids_count = bids_count + 1;
-                } else {
-                    bid_loop = false;
-                }
-            };
-
-            let ask_loop = true;
-        
-            while(ask_loop) {
-                let ask = vector::borrow(&orderBook.asks, asks_count);
-                if(ask.current.price == 0) {
-                     asks_count = asks_count + 1;
-                } else {
-                    ask_loop = false;
-                }
-            };
-            
             let bid = vector::borrow(&orderBook.bids, bids_count);
             let ask = vector::borrow(&orderBook.asks, asks_count);
            
@@ -406,14 +435,9 @@ module orderbookmodule::orders {
                 
                 break;
             };
-         
-            let parent_bid_limit_price = vector::borrow(&orderBook.bids, bids_count).current.price;
-            let parent_bid_limit = table::borrow_mut(&mut orderBook.bid_limits, parent_bid_limit_price);
-            let parent_ask_limit_price = vector::borrow(&orderBook.asks, asks_count).current.price;
-            let parent_ask_limit = table::borrow_mut(&mut orderBook.ask_limits, parent_ask_limit_price);
             
-            let current_bid_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&parent_bid_limit.head));
-            let current_ask_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&parent_ask_limit.head));
+            let current_bid_idx = get_current_entry_idx(&mut orderBook.bids, bids_count, &mut orderBook.bid_limits);
+            let current_ask_idx = get_current_entry_idx(&mut orderBook.asks, asks_count, &mut orderBook.ask_limits);
            
             while(option::is_some(&current_bid_idx) && option::is_some(&current_ask_idx)) {
                 let bid_idx = option::borrow(&current_bid_idx);
@@ -427,23 +451,8 @@ module orderbookmodule::orders {
                     let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
 
                     if(balance::value(bidder_usdt_wallet) >= bidder_usdt && balance::value(asker_sui_wallet) >= current_ask.current.current_quantity) {
-                        let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
-                        let asset_b_to_change = balance::split(asker_sui_wallet, current_ask.current.current_quantity);
-
-                        // todo refactor
-                        if(vec_map::contains(&orderBook.asset_a_to_transfer, &current_ask.current.user)) {
-                            let user_balance = vec_map::get_mut(&mut orderBook.asset_a_to_transfer, &current_ask.current.user);
-                            balance::join(user_balance, asset_a_to_change);
-                        } else {
-                            vec_map::insert(&mut orderBook.asset_a_to_transfer, current_ask.current.user, asset_a_to_change);
-                        };
-
-                        if(vec_map::contains(&orderBook.asset_b_to_transfer, &current_bid.current.user)) {
-                            let user_balance = vec_map::get_mut(&mut orderBook.asset_b_to_transfer, &current_bid.current.user);
-                            balance::join(user_balance, asset_b_to_change);
-                        } else {
-                            vec_map::insert(&mut orderBook.asset_b_to_transfer, current_bid.current.user, asset_b_to_change);
-                        };
+                        join_balance_or_insert<AssetA>(&mut orderBook.asset_a_to_transfer, current_ask.current.user, balance::split(bidder_usdt_wallet, bidder_usdt));
+                        join_balance_or_insert<AssetB>(&mut orderBook.asset_b_to_transfer, current_bid.current.user, balance::split(asker_sui_wallet, current_ask.current.current_quantity));
                     } else {
                         debug::print(&7777777777771);
                             // return error because sth wrong with wallets
@@ -451,17 +460,8 @@ module orderbookmodule::orders {
                    
                     current_bid.current.current_quantity = 0;
                     current_ask.current.current_quantity = 0;
-                    if(option::is_none(&current_bid.next)) {
-                        current_bid_idx = option::none(); 
-                    } else {
-                        current_bid_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&current_bid.next));
-                    };
-                   
-                   if(option::is_none(&current_ask.next)) {
-                        current_ask_idx = option::none(); 
-                    } else {
-                        current_ask_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&current_ask.next));
-                    };
+                    current_bid_idx = get_idx_from_entries(current_bid.next, &mut orderBook.bids);
+                    current_ask_idx = get_idx_from_entries(current_ask.next, &mut orderBook.asks);
                     
                     bids_count = bids_count + 1; 
                     asks_count = asks_count + 1; 
@@ -477,26 +477,8 @@ module orderbookmodule::orders {
                     let asker_sui_wallet = table::borrow_mut(&mut orderBook.asset_b, current_ask.current.user);
                   
                     if(balance::value(bidder_usdt_wallet) >= bidder_usdt && balance::value(asker_sui_wallet) >= current_ask.current.current_quantity) {
-          
-                        let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
-                        let asset_b_to_change = balance::split(asker_sui_wallet, current_ask.current.current_quantity);
-                        
-                        // todo refactor
-                        if(vec_map::contains(&orderBook.asset_a_to_transfer, &current_ask.current.user)) {
-                            let user_balance = vec_map::get_mut(&mut orderBook.asset_a_to_transfer, &current_ask.current.user);
-                            balance::join(user_balance, asset_a_to_change);
-                        } else {
-                            vec_map::insert(&mut orderBook.asset_a_to_transfer, current_ask.current.user, asset_a_to_change);
-                        };
-
-                        if(vec_map::contains(&orderBook.asset_b_to_transfer, &current_bid.current.user)) {
-                           
-                            let user_balance = vec_map::get_mut(&mut orderBook.asset_b_to_transfer, &current_bid.current.user);
-                            balance::join(user_balance, asset_b_to_change);
-                        } else {
-                           
-                            vec_map::insert(&mut orderBook.asset_b_to_transfer, current_bid.current.user, asset_b_to_change);
-                        };
+                        join_balance_or_insert<AssetA>(&mut orderBook.asset_a_to_transfer, current_ask.current.user, balance::split(bidder_usdt_wallet, bidder_usdt));
+                        join_balance_or_insert<AssetB>(&mut orderBook.asset_b_to_transfer, current_bid.current.user, balance::split(asker_sui_wallet, current_ask.current.current_quantity));
                     } else {
                         debug::print(&77777777777722);
                         // return error because sth wrong with wallets
@@ -504,14 +486,9 @@ module orderbookmodule::orders {
                     
                     current_bid.current.current_quantity = current_bid.current.current_quantity - (current_ask.current.current_quantity * current_ask.current.price);
                     current_ask.current.current_quantity = 0;
+                    current_ask_idx = get_idx_from_entries(current_ask.next, &mut orderBook.asks);
 
-                    if(option::is_none(&current_ask.next)) {
-                       current_ask_idx = option::none(); 
-                    } else {
-                        current_ask_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&current_ask.next));
-                    };
-
-                    asks_count = asks_count + 1; // new add
+                    asks_count = asks_count + 1;
                 } else {
                     
                     let bidder_usdt_wallet = table::borrow_mut(&mut orderBook.asset_a, current_bid.current.user);
@@ -521,33 +498,13 @@ module orderbookmodule::orders {
                     if(balance::value(bidder_usdt_wallet) >= current_bid.current.current_quantity &&  balance::value(asker_sui_wallet) >= (current_bid.current.current_quantity / current_bid.current.price)) {
                         let asset_a_to_change = balance::split(bidder_usdt_wallet, bidder_usdt);
                         let asset_b_to_change = balance::split(asker_sui_wallet, (current_bid.current.current_quantity / current_ask.current.price));
-                        
-                        // todo refactor
-                        if(vec_map::contains(&orderBook.asset_a_to_transfer, &current_ask.current.user)) {
-                            let user_balance = vec_map::get_mut(&mut orderBook.asset_a_to_transfer, &current_ask.current.user);
-                            balance::join(user_balance, asset_a_to_change);
-                        } else {
-                            vec_map::insert(&mut orderBook.asset_a_to_transfer, current_ask.current.user, asset_a_to_change);
-                        };
 
-                        if(vec_map::contains(&orderBook.asset_b_to_transfer, &current_bid.current.user)) {
-                            let user_balance = vec_map::get_mut(&mut orderBook.asset_b_to_transfer, &current_bid.current.user);
-                            balance::join(user_balance, asset_b_to_change);
-                        } else {
-                            vec_map::insert(&mut orderBook.asset_b_to_transfer, current_bid.current.user, asset_b_to_change);
-                        };
+                        join_balance_or_insert<AssetA>(&mut orderBook.asset_a_to_transfer, current_ask.current.user, asset_a_to_change);
+                        join_balance_or_insert<AssetB>(&mut orderBook.asset_b_to_transfer, current_bid.current.user, asset_b_to_change);
 
                         if((current_bid.current.current_quantity - bidder_usdt) > 0) {
                             let asset_a_to_return = balance::split(bidder_usdt_wallet, current_bid.current.current_quantity - bidder_usdt);
-
-                            // todo refactor
-                            if(vec_map::contains(&orderBook.asset_a_to_transfer, &current_bid.current.user)) {
-                                let user_balance = vec_map::get_mut(&mut orderBook.asset_a_to_transfer, &current_bid.current.user);
-                                balance::join(user_balance, asset_a_to_return);
-                            } else {
-                                vec_map::insert(&mut orderBook.asset_a_to_transfer, current_bid.current.user, asset_a_to_return);
-                            };
-                            // public_transfer(coin::from_balance<AssetA>(asset_a_to_return, ctx), current_bid.current.user);
+                            join_balance_or_insert<AssetA>(&mut orderBook.asset_a_to_transfer, current_bid.current.user, asset_a_to_return);
                         }
                     } else {
                          debug::print(&7777777777773);
@@ -556,32 +513,13 @@ module orderbookmodule::orders {
                 
                     current_ask.current.current_quantity = current_ask.current.current_quantity - (current_bid.current.current_quantity / current_ask.current.price);
                     current_bid.current.current_quantity = 0;
-                    if(option::is_none(&current_bid.next)) {
-                        current_bid_idx = option::none();
-                    } else {
-                        current_bid_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&current_bid.next));
-                    };
+                    current_bid_idx = get_idx_from_entries(current_bid.next, &mut orderBook.bids);
                     bids_count = bids_count + 1; // new add
                 }
             };    
 
-            let xi = 0;
-            let asset_a_len = vec_map::size(&orderBook.asset_a_to_transfer);
-            while(xi < asset_a_len) {
-                let (recepient, asset_to_transfer) = vec_map::pop(&mut orderBook.asset_a_to_transfer);
-                
-                public_transfer(coin::from_balance<AssetA>(asset_to_transfer, ctx), recepient);
-                xi = xi + 1;
-            }; 
-
-            let xy = 0;
-            let asset_b_len = vec_map::size(&orderBook.asset_b_to_transfer);
-            while(xy < asset_b_len) {
-                 let (recepient, asset_to_transfer) = vec_map::pop(&mut orderBook.asset_b_to_transfer);
-                 
-                public_transfer(coin::from_balance<AssetB>(asset_to_transfer, ctx), recepient);
-                xy = xy + 1;
-            };       
+            transfer_all<AssetA>(&mut orderBook.asset_a_to_transfer, ctx);
+            transfer_all<AssetB>(&mut orderBook.asset_b_to_transfer, ctx);
         };
         // stopped here
         
@@ -683,86 +621,10 @@ module orderbookmodule::orders {
             
             p = p + 1;
         };
-        
-        let y = 0;
-        while(y < vector::length(&bid_limits_to_delete)) {
-            let limit = table::remove(&mut orderBook.bid_limits, *vector::borrow(&bid_limits_to_delete, y));
-            let Limit {
-                            id,
-                            price: _,
-                            head: _,
-                            tail: _,
-                        } = limit;
-            object::delete(id);
-            y = y + 1;
-        };
-        
-        let z = 0;
-        while(z < vector::length(&bid_orders_to_delete)) {
-            let order_id = vector::borrow(&bid_orders_to_delete, z);
-            let bid_order_to_delete_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, order_id);
-            let orderBookEntry = vector::remove(&mut orderBook.bids, *option::borrow(&bid_order_to_delete_idx));
-            let OrderbookEntry {
-                            id,
-                            current,
-                            is_by_side: _,
-                            parent_limit: _,
-                            next: _,
-                            previous: _,
-                        } = orderBookEntry;
-            object::delete(id);
-
-            let Order {
-                id,
-                price: _,
-                is_by_side: _,
-                initial_quantity: _,
-                current_quantity: _,
-                user: _,
-            } = current;
-            object::delete(id);
-            z = z + 1;
-        };
-
-        let d = 0;
-        while(d < vector::length(&ask_limits_to_delete)) {
-            let limit = table::remove(&mut orderBook.ask_limits, *vector::borrow(&ask_limits_to_delete, d));
-            let Limit {
-                            id,
-                            price: _,
-                            head: _,
-                            tail: _,
-                        } = limit;
-            object::delete(id);
-            d = d + 1;
-        };
-        
-        let h = 0;
-        while(h < vector::length(&ask_orders_to_delete)) {
-            let order_id = vector::borrow(&ask_orders_to_delete, h);
-            let ask_order_to_delete_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, order_id);
-            let orderBookEntry = vector::remove(&mut orderBook.asks, *option::borrow(&ask_order_to_delete_idx));
-            let OrderbookEntry {
-                            id,
-                            current,
-                            is_by_side: _,
-                            parent_limit: _,
-                            next: _,
-                            previous: _,
-                        } = orderBookEntry;
-            object::delete(id);
-
-            let Order {
-                id,
-                price: _,
-                is_by_side: _,
-                initial_quantity: _,
-                current_quantity: _,
-                user: _,
-            } = current;
-            object::delete(id);
-            h = h + 1;
-        }
+        delete_limit_butch(bid_limits_to_delete, &mut orderBook.bid_limits);
+        delete_limit_butch(ask_limits_to_delete, &mut orderBook.ask_limits);
+        delete_order_butch(bid_orders_to_delete, &mut orderBook.bids);
+        delete_order_butch(ask_orders_to_delete, &mut orderBook.asks);
     }
 
     public fun sort_vec(elems: &mut vector<OrderbookEntry>) {
