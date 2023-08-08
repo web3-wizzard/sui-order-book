@@ -541,12 +541,33 @@ module orderbookmodule::orders {
             let bid_limit_price = vector::borrow(&vec_set::into_keys(bid_limits_vec), i);
             let limit = table::borrow_mut(&mut orderBook.bid_limits, *bid_limit_price);
             
-            let run_bid_limit = true;
+            collect_limits_and_to_delete(limit, &mut orderBook.bids, &mut bid_limits_to_delete, &mut bid_orders_to_delete, *bid_limit_price);
+        
+            i = i + 1;
+        };
+       
+        let p = 0; 
+        while (p < vec_set::size(&ask_limits_vec)) {
+            let ask_limit_price = vector::borrow(&vec_set::into_keys(ask_limits_vec), p);
+            let limit = table::borrow_mut(&mut orderBook.ask_limits, *ask_limit_price);
+            
+            collect_limits_and_to_delete(limit, &mut orderBook.asks, &mut ask_limits_to_delete, &mut ask_orders_to_delete, *ask_limit_price);
+            
+            p = p + 1;
+        };
+        delete_limit_butch(bid_limits_to_delete, &mut orderBook.bid_limits);
+        delete_limit_butch(ask_limits_to_delete, &mut orderBook.ask_limits);
+        delete_order_butch(bid_orders_to_delete, &mut orderBook.bids);
+        delete_order_butch(ask_orders_to_delete, &mut orderBook.asks);
+    }
+
+    fun collect_limits_and_to_delete(limit: &mut Limit, entries: &mut vector<OrderbookEntry>, limits_to_delete: &mut vector<u64>, entires_to_delete: &mut vector<ID>, limit_price: u64) {
+        let run_bid_limit = true;
             while(run_bid_limit) {
                 if(option::is_some<ID>(&limit.head)) {
-                    let order_idx = get_idx_opt<OrderbookEntry>(&orderBook.bids, option::borrow(&limit.head));
+                    let order_idx = get_idx_opt<OrderbookEntry>(entries, option::borrow(&limit.head));
                     
-                    let order = vector::borrow_mut(&mut orderBook.bids, *option::borrow(&order_idx));
+                    let order = vector::borrow_mut(entries, *option::borrow(&order_idx));
                     let order_id = object::id(order);
                     if(order.current.current_quantity == 0) {
                         if(option::is_some(&order.previous)) {
@@ -555,19 +576,19 @@ module orderbookmodule::orders {
                        
                         if(option::is_some(&order.next)) {
                             limit.head = order.next;
-                            let next_order_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.bids, option::borrow(&order.next));
-                            let next_order = vector::borrow_mut(&mut orderBook.bids, *option::borrow(&next_order_idx));
+                            let next_order_idx = get_idx_opt<OrderbookEntry>(entries, option::borrow(&order.next));
+                            let next_order = vector::borrow_mut(entries, *option::borrow(&next_order_idx));
                             next_order.previous = option::none();
                         } else if (option::is_some(&limit.tail) && option::borrow(&limit.head) == option::borrow(&limit.tail)) {
-                            vector::push_back(&mut bid_limits_to_delete, *bid_limit_price);
+                            vector::push_back(limits_to_delete, limit_price);
                             
                             run_bid_limit = false;
                         };
                         
-                        let get_index_to_check_should_not_exist = get_idx_opt_plain<ID>(&bid_orders_to_delete, &order_id);
+                        let get_index_to_check_should_not_exist = get_idx_opt_plain<ID>(entires_to_delete, &order_id);
                         
                         if(option::is_none(&get_index_to_check_should_not_exist)) {
-                            vector::push_back(&mut bid_orders_to_delete, order_id);
+                            vector::push_back(entires_to_delete, order_id);
                         }
                         
                     } else {
@@ -576,55 +597,6 @@ module orderbookmodule::orders {
                 }
                 
             };
-            
-            i = i + 1;
-        };
-       
-        let p = 0; 
-        while (p < vec_set::size(&ask_limits_vec)) {
-            let ask_limit_price = vector::borrow(&vec_set::into_keys(ask_limits_vec), p);
-            let limit = table::borrow_mut(&mut orderBook.ask_limits, *ask_limit_price);
-            let run_ask_limit = true;
-
-            while(run_ask_limit) {
-                if(option::is_some<ID>(&limit.head)) {
-                    let order_idx = get_idx_opt<OrderbookEntry>(&orderBook.asks, option::borrow(&limit.head));
-                    let order = vector::borrow_mut(&mut orderBook.asks, *option::borrow(&order_idx));
-                    let order_id = object::id(order);
-                    if(order.current.current_quantity == 0) {
-                        if(option::is_some(&order.previous)) {
-                            // "Error, order can not have previous"
-                        };
-
-                        if(option::is_some(&order.next)) {
-                            limit.head = order.next;
-                            let next_order_idx = get_idx_opt<OrderbookEntry>(&mut orderBook.asks, option::borrow(&order.next));
-                            let next_order = vector::borrow_mut(&mut orderBook.asks, *option::borrow(&next_order_idx));
-                            next_order.previous = option::none();
-                        } else if (option::is_some(&limit.tail) && option::borrow(&limit.head) == option::borrow(&limit.tail)) {
-                            vector::push_back(&mut ask_limits_to_delete, *ask_limit_price);
-
-                            run_ask_limit = false;
-                        };
-                        
-                        let get_index_to_check_should_not_exist = get_idx_opt_plain<ID>(&ask_orders_to_delete, &order_id);
-                        
-                        if(option::is_none(&get_index_to_check_should_not_exist)) {
-                             vector::push_back(&mut ask_orders_to_delete, order_id);
-                        }
-                    } else {
-                        run_ask_limit = false;
-                    }
-                }
-                
-            };
-            
-            p = p + 1;
-        };
-        delete_limit_butch(bid_limits_to_delete, &mut orderBook.bid_limits);
-        delete_limit_butch(ask_limits_to_delete, &mut orderBook.ask_limits);
-        delete_order_butch(bid_orders_to_delete, &mut orderBook.bids);
-        delete_order_butch(ask_orders_to_delete, &mut orderBook.asks);
     }
 
     public fun sort_vec(elems: &mut vector<OrderbookEntry>) {
