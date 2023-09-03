@@ -106,16 +106,16 @@ module orderbookmodule::orders {
         add_ask_order_to_orderbook(order, base_limit, orderbook, false, ctx);
     }
 
-// //todo make private
-    public fun remove_bid_order<AssetA, AssetB>(entryID: ID, orderbook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+
+    public entry fun remove_bid_order<AssetA, AssetB>(entryID: ID, orderbook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
         remove_order<AssetB>(&mut orderbook.bids, entryID,&mut orderbook.asset_b,ctx, &mut orderbook.bid_limits);
     }
 
-     public fun remove_ask_order<AssetA, AssetB>(entryID: ID, orderbook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+     public entry fun remove_ask_order<AssetA, AssetB>(entryID: ID, orderbook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
         remove_order<AssetA>(&mut orderbook.asks, entryID,&mut orderbook.asset_a,ctx, &mut orderbook.ask_limits);
     }
 
-    public fun remove_order<T>(entries: &mut vector<Entry>, entryID: ID, asset: &mut Table<address, Balance<T>>, ctx: &mut TxContext, limits: &mut Table<u64, Limit>) {
+  fun remove_order<T>(entries: &mut vector<Entry>, entryID: ID, asset: &mut Table<address, Balance<T>>, ctx: &mut TxContext, limits: &mut Table<u64, Limit>) {
          let ob_entry_idx = get_idx_opt<Entry>(entries, &entryID);
 
         if(option::is_none(&ob_entry_idx)) {
