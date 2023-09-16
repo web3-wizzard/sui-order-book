@@ -421,14 +421,10 @@ module orderbookmodule::orders {
                     let bidder_b_asset = curr_ask.current.price * curr_ask.current.cur_quantity; // todo return delto to bidder
                     let asker_a_wallet = table::borrow_mut(&mut orderbook.asset_a, curr_ask.current.user);
 
-                    if(balance::value(bidder_b_wallet) >= bidder_b_asset && balance::value(asker_a_wallet) >= curr_ask.current.cur_quantity) {
-                        join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_ask.current.user, balance::split(bidder_b_wallet, bidder_b_asset));
-                        join_balance_or_insert<AssetA>(&mut orderbook.asset_a_tmp, curr_bid.current.user, balance::split(asker_a_wallet, curr_ask.current.cur_quantity));
-                    } else {
-                        debug::print(&7777777777771);
-                            // return error because sth wrong with wallets
-                    };
-                   
+                    assert!(balance::value(bidder_b_wallet) >= bidder_b_asset && balance::value(asker_a_wallet) >= curr_ask.current.cur_quantity, 123);
+                    join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_ask.current.user, balance::split(bidder_b_wallet, bidder_b_asset));
+                    join_balance_or_insert<AssetA>(&mut orderbook.asset_a_tmp, curr_bid.current.user, balance::split(asker_a_wallet, curr_ask.current.cur_quantity));
+                    
                     curr_bid.current.cur_quantity = 0;
                     curr_ask.current.cur_quantity = 0;
                     curr_bid_idx = get_idx_from_entries(curr_bid.next, &mut orderbook.bids);
@@ -444,13 +440,9 @@ module orderbookmodule::orders {
                     let bidder_b_asset = curr_ask.current.price * curr_ask.current.cur_quantity;
                     let asker_a_wallet = table::borrow_mut(&mut orderbook.asset_a, curr_ask.current.user);
                   
-                    if(balance::value(bidder_b_wallet) >= bidder_b_asset && balance::value(asker_a_wallet) >= curr_ask.current.cur_quantity) {
-                        join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_ask.current.user, balance::split(bidder_b_wallet, bidder_b_asset));
-                        join_balance_or_insert<AssetA>(&mut orderbook.asset_a_tmp, curr_bid.current.user, balance::split(asker_a_wallet, curr_ask.current.cur_quantity));
-                    } else {
-                        debug::print(&77777777777722);
-                        // return error because sth wrong with wallets
-                    };
+                    assert!(balance::value(bidder_b_wallet) >= bidder_b_asset && balance::value(asker_a_wallet) >= curr_ask.current.cur_quantity, 124);
+                    join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_ask.current.user, balance::split(bidder_b_wallet, bidder_b_asset));
+                    join_balance_or_insert<AssetA>(&mut orderbook.asset_a_tmp, curr_bid.current.user, balance::split(asker_a_wallet, curr_ask.current.cur_quantity));
                     
                     curr_bid.current.cur_quantity = curr_bid.current.cur_quantity - (curr_ask.current.cur_quantity * curr_ask.current.price);
                     curr_ask.current.cur_quantity = 0;
@@ -463,21 +455,17 @@ module orderbookmodule::orders {
                     let bidder_b_asset = (curr_bid.current.cur_quantity / curr_ask.current.price) * curr_ask.current.price; // todo return delta to bidder
                     let asker_a_wallet = table::borrow_mut(&mut orderbook.asset_a, curr_ask.current.user);
                    
-                    if(balance::value(bidder_b_wallet) >= curr_bid.current.cur_quantity &&  balance::value(asker_a_wallet) >= (curr_bid.current.cur_quantity / curr_bid.current.price)) {
-                        let asset_b_to_change = balance::split(bidder_b_wallet, bidder_b_asset);
-                        let asset_a_to_change = balance::split(asker_a_wallet, (curr_bid.current.cur_quantity / curr_ask.current.price));
+                    assert!(balance::value(bidder_b_wallet) >= curr_bid.current.cur_quantity &&  balance::value(asker_a_wallet) >= (curr_bid.current.cur_quantity / curr_bid.current.price), 125);
+                    let asset_b_to_change = balance::split(bidder_b_wallet, bidder_b_asset);
+                    let asset_a_to_change = balance::split(asker_a_wallet, (curr_bid.current.cur_quantity / curr_ask.current.price));
 
-                        join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_ask.current.user, asset_b_to_change);
-                        join_balance_or_insert<AssetA>(&mut orderbook.asset_a_tmp, curr_bid.current.user, asset_a_to_change);
+                    join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_ask.current.user, asset_b_to_change);
+                    join_balance_or_insert<AssetA>(&mut orderbook.asset_a_tmp, curr_bid.current.user, asset_a_to_change);
 
-                        if((curr_bid.current.cur_quantity - bidder_b_asset) > 0) {
-                            let asset_b_to_return = balance::split(bidder_b_wallet, curr_bid.current.cur_quantity - bidder_b_asset);
-                            join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_bid.current.user, asset_b_to_return);
-                        }
-                    } else {
-                         debug::print(&7777777777773);
-                        // return error because sth wrong with wallets
-                    };
+                    if((curr_bid.current.cur_quantity - bidder_b_asset) > 0) {
+                        let asset_b_to_return = balance::split(bidder_b_wallet, curr_bid.current.cur_quantity - bidder_b_asset);
+                        join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_bid.current.user, asset_b_to_return);
+                    }
                 
                     curr_ask.current.cur_quantity = curr_ask.current.cur_quantity - (curr_bid.current.cur_quantity / curr_ask.current.price);
                     curr_bid.current.cur_quantity = 0;
