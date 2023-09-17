@@ -11,6 +11,7 @@ module orderbookmodule::orders {
     use std::debug;
     use sui::vec_set::{Self, VecSet};
     use sui::vec_map::{Self, VecMap};
+    use sui::clock::{Self, Clock};
 
     struct OrderbookManagerCap has key, store { id: UID }
 
@@ -19,6 +20,7 @@ module orderbookmodule::orders {
         current: Order,
         is_by_side: bool,
         parent_limit: ID,
+        timestamp_ms: u64,
         next: Option<ID>, // Entry
         prev: Option<ID> // Entry
     }
@@ -78,7 +80,7 @@ module orderbookmodule::orders {
     }
 
     // need to handle initial quantity blya o chem eto ya
-    public entry fun add_bid_order<AssetA, AssetB>(price: u64, orderbook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetB>,ctx: &mut TxContext) {
+    public entry fun add_bid_order<AssetA, AssetB>(price: u64, orderbook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetB>, clock: &Clock, ctx: &mut TxContext) {
         let base_limit = create_limit(price, ctx);
         
         let coin_balance = coin::into_balance(coin);
@@ -89,10 +91,10 @@ module orderbookmodule::orders {
         let balance = borrow_mut_account_balance<AssetB>(&mut orderbook.asset_b, tx_context::sender(ctx));
         balance::join(balance, coin_balance);
         
-        add_bid_order_to_orderbook(order, base_limit, orderbook, true, ctx);
+        add_bid_order_to_orderbook(order, base_limit, orderbook, true, clock, ctx);
     }
 
-    public entry fun add_ask_order<AssetA, AssetB>(price: u64, orderbook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetA>,ctx: &mut TxContext) {
+    public entry fun add_ask_order<AssetA, AssetB>(price: u64, orderbook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetA>, clock: &Clock, ctx: &mut TxContext) {
         let base_limit = create_limit(price, ctx);
 
         let coin_balance = coin::into_balance(coin);
@@ -103,7 +105,7 @@ module orderbookmodule::orders {
         let balance = borrow_mut_account_balance<AssetA>(&mut orderbook.asset_a, tx_context::sender(ctx));
         balance::join(balance, coin_balance);
         
-        add_ask_order_to_orderbook(order, base_limit, orderbook, false, ctx);
+        add_ask_order_to_orderbook(order, base_limit, orderbook, false, clock, ctx);
     }
 
 
@@ -241,30 +243,31 @@ module orderbookmodule::orders {
         }
     }
 
-    fun create_new_entry(order: Order, limit_id: ID, is_by_side: bool, ctx: &mut TxContext): Entry {
+    fun create_new_entry(order: Order, limit_id: ID, is_by_side: bool, clock: &Clock, ctx: &mut TxContext): Entry {
         Entry {
             id: object::new(ctx),
             is_by_side,
             current: order,
             parent_limit: limit_id,
+            timestamp_ms: clock::timestamp_ms(clock),
             next: option::none(),
             prev: option::none()
         }
     }
 
    
-    fun add_bid_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderbook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, ctx: &mut TxContext) {
-        add_order(&mut orderbook.bids, &mut orderbook.bid_limits, limit, is_by_side, order, ctx);
+    fun add_bid_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderbook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, clock: &Clock, ctx: &mut TxContext) {
+        add_order(&mut orderbook.bids, &mut orderbook.bid_limits, limit, is_by_side, order, clock, ctx);
         match(orderbook, ctx);
     }
 
-    fun add_ask_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderbook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, ctx: &mut TxContext) {
-        add_order(&mut orderbook.asks, &mut orderbook.ask_limits, limit, is_by_side, order, ctx);
+    fun add_ask_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderbook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, clock: &Clock, ctx: &mut TxContext) {
+        add_order(&mut orderbook.asks, &mut orderbook.ask_limits, limit, is_by_side, order, clock, ctx);
         match(orderbook, ctx);
     }
 
-    fun add_order(entries: &mut vector<Entry>, limits: &mut Table<u64, Limit>, limit: Limit, is_by_side: bool, order: Order,ctx: &mut TxContext) {
-        let new_entry = create_new_entry(order, object::id(&limit), is_by_side, ctx);
+    fun add_order(entries: &mut vector<Entry>, limits: &mut Table<u64, Limit>, limit: Limit, is_by_side: bool, order: Order, clock: &Clock,ctx: &mut TxContext) {
+        let new_entry = create_new_entry(order, object::id(&limit), is_by_side, clock, ctx);
         if(table::contains(limits, limit.price)) {
             let existing_limit = table::borrow_mut(limits, limit.price);
            
@@ -367,6 +370,7 @@ module orderbookmodule::orders {
             current,
             is_by_side: _,
             parent_limit: _,
+            timestamp_ms: _,
             next: _,
             prev: _,
         } = entry;
@@ -741,6 +745,7 @@ module orderbookmodule::orders_tests {
     use std::debug;
     use sui::coin::{Self, Coin};
     use sui::transfer;
+    use sui::clock::{Self, Clock};
 
     struct ASSET_A {}
     struct ASSET_B {}
@@ -856,8 +861,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-           
-            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 10, ctx(test)), ctx(test));
+            
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 10, ctx(test)), &clock, ctx(test));
             
             let theguy_wallet_amount = orders::get_bid_wallet_amount(&orderbook, ctx(test));
             assert!(theguy_wallet_amount == 309_000_000_000_0, 0);
@@ -887,7 +893,7 @@ module orderbookmodule::orders_tests {
             assert!(asset_a_len == 0, 0);
             assert!(asset_a_tmp_len == 0, 0);
             assert!(asset_b_tmp_len == 0, 0);
-
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         }
     }
@@ -937,8 +943,8 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-           
-            orders::add_ask_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 10, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 10, ctx(test)), &clock, ctx(test));
             
             let thegirl_wallet_amount = orders::get_ask_wallet_amount(&orderbook, ctx(test));
             
@@ -969,7 +975,7 @@ module orderbookmodule::orders_tests {
             assert!(asset_a_len == 1, 0);
             assert!(asset_a_tmp_len == 0, 0);
             assert!(asset_b_tmp_len == 0, 0);
-
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         }
     }
@@ -1019,7 +1025,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 10, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 10, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
         
@@ -1028,7 +1036,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1036,7 +1046,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(308 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(308 * 1_000_000_000 * 5, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(308 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(308 * 1_000_000_000 * 5, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1044,7 +1056,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(307 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(307 * 1_000_000_000 * 1, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(307 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(307 * 1_000_000_000 * 1, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1052,7 +1066,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_ask_order<ASSET_A, ASSET_B>(311 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 8, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(311 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 8, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);    
         };
 
@@ -1060,10 +1076,10 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            
-            orders::add_ask_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 12, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 12, ctx(test)), &clock, ctx(test));
            
-            // orders::test(&orderbook);
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
       
         };
@@ -1137,8 +1153,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            
-            orders::add_ask_order<ASSET_A, ASSET_B>(313 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(313 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1146,7 +1163,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_ask_order<ASSET_A, ASSET_B>(315 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 2, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(315 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 2, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1155,8 +1174,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            
-            orders::add_ask_order<ASSET_A, ASSET_B>(308 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 3, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(308 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 3, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1198,7 +1218,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_ask_order<ASSET_A, ASSET_B>(306 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(306 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1264,7 +1286,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1272,7 +1296,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_ask_order<ASSET_A, ASSET_B>(306 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(306 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1333,7 +1359,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1341,7 +1369,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_ask_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1399,7 +1429,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(1_00_000_000, &mut orderbook, mint<ASSET_B>(1_00_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(1_00_000_000, &mut orderbook, mint<ASSET_B>(1_00_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1407,7 +1439,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_ask_order<ASSET_A, ASSET_B>(1_00_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(1_00_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1465,7 +1499,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_ask_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1473,7 +1509,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 4, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 4, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1528,7 +1566,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 1, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(309 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(309 * 1_000_000_000 * 1, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1536,7 +1576,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_ask_order<ASSET_A, ASSET_B>(310 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 5, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_ask_order<ASSET_A, ASSET_B>(310 * 1_000_000_000, &mut orderbook, mint<ASSET_A>(1_000_000_000 * 5, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
@@ -1544,7 +1586,9 @@ module orderbookmodule::orders_tests {
 
         {
             let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
-            orders::add_bid_order<ASSET_A, ASSET_B>(311 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(311 * 1_000_000_000 * 3, ctx(test)), ctx(test));
+            let clock = clock::create_for_testing(ctx(test));
+            orders::add_bid_order<ASSET_A, ASSET_B>(311 * 1_000_000_000, &mut orderbook, mint<ASSET_B>(311 * 1_000_000_000 * 3, ctx(test)), &clock, ctx(test));
+            clock::destroy_for_testing(clock);
             test::return_shared(orderbook);
         };
 
