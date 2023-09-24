@@ -12,6 +12,7 @@ module orderbookmodule::orders {
     use sui::vec_set::{Self, VecSet};
     use sui::vec_map::{Self, VecMap};
     use sui::clock::{Self, Clock};
+    use sui::event;
 
     struct OrderbookManagerCap has key, store { id: UID }
 
@@ -53,6 +54,34 @@ module orderbookmodule::orders {
         asset_b_tmp: VecMap<address, Balance<AssetB>>, // for satisfy compiler and error still may contain value
     }
 
+    struct OrderMatchedEvent has copy, drop {
+        orderbook: ID,
+        is_bid: bool,
+        timestamp_ms: u64,
+        amount: u64,
+        price: u64,
+    }
+
+    struct OrderCreatedEvent has copy, drop {
+        orderbook: ID,
+        id: ID,
+        timestamp_ms: u64,
+        amount: u64,
+        price: u64,
+        is_bid: bool,
+        account: address,
+        is_limit: bool,
+    }
+
+     struct OrderRemoveEvent has copy, drop {
+        orderbook: ID,
+        id: ID,
+        timestamp_ms: u64,
+        is_bid: bool,
+        account: address,
+        is_limit: bool,
+    }
+
     fun init(ctx: &mut TxContext) {
         transfer::public_transfer(OrderbookManagerCap { id: object::new(ctx) }, tx_context::sender(ctx));
     }
@@ -88,10 +117,21 @@ module orderbookmodule::orders {
        
         let order = create_order(price, true, coin_value, coin_value, tx_context::sender(ctx), ctx);
         
+        event::emit(OrderCreatedEvent {
+            orderbook: object::uid_to_inner(&orderbook.id),
+            id: object::uid_to_inner(&order.id),
+            timestamp_ms: clock::timestamp_ms(clock),
+            amount: coin_value,
+            price,
+            is_bid: true,
+            account: tx_context::sender(ctx),
+            is_limit: true,
+        });
+        
         let balance = borrow_mut_account_balance<AssetB>(&mut orderbook.asset_b, tx_context::sender(ctx));
         balance::join(balance, coin_balance);
         
-        add_bid_order_to_orderbook(order, base_limit, orderbook, true, clock, ctx);
+        add_bid_order_to_orderbook(order, base_limit, orderbook, true, clock, price, ctx);
     }
 
     public entry fun add_ask_order<AssetA, AssetB>(price: u64, orderbook: &mut Orderbook<AssetA, AssetB>, coin: Coin<AssetA>, clock: &Clock, ctx: &mut TxContext) {
@@ -102,19 +142,48 @@ module orderbookmodule::orders {
 
         let order = create_order(price, false, coin_value, coin_value, tx_context::sender(ctx), ctx);
 
+        event::emit(OrderCreatedEvent {
+            orderbook: object::uid_to_inner(&orderbook.id),
+            id: object::uid_to_inner(&order.id),
+            timestamp_ms: clock::timestamp_ms(clock),
+            amount: coin_value,
+            price,
+            is_bid: false,
+            account: tx_context::sender(ctx),
+            is_limit: true,
+        });
+
         let balance = borrow_mut_account_balance<AssetA>(&mut orderbook.asset_a, tx_context::sender(ctx));
         balance::join(balance, coin_balance);
         
-        add_ask_order_to_orderbook(order, base_limit, orderbook, false, clock, ctx);
+        add_ask_order_to_orderbook(order, base_limit, orderbook, false, clock, price, ctx);
     }
 
 
-    public entry fun remove_bid_order<AssetA, AssetB>(entryID: ID, orderbook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+    public entry fun remove_bid_order<AssetA, AssetB>(entryID: ID, orderbook: &mut Orderbook<AssetA, AssetB>, clock: &Clock, ctx: &mut TxContext) {
         remove_order<AssetB>(&mut orderbook.bids, entryID,&mut orderbook.asset_b,ctx, &mut orderbook.bid_limits);
+
+        event::emit(OrderRemoveEvent {
+            orderbook: object::uid_to_inner(&orderbook.id),
+            id: entryID,
+            timestamp_ms: clock::timestamp_ms(clock),
+            is_bid: true,
+            account: tx_context::sender(ctx),
+            is_limit: true,
+        });
     }
 
-     public entry fun remove_ask_order<AssetA, AssetB>(entryID: ID, orderbook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+     public entry fun remove_ask_order<AssetA, AssetB>(entryID: ID, orderbook: &mut Orderbook<AssetA, AssetB>, clock: &Clock, ctx: &mut TxContext) {
         remove_order<AssetA>(&mut orderbook.asks, entryID,&mut orderbook.asset_a,ctx, &mut orderbook.ask_limits);
+
+        event::emit(OrderRemoveEvent {
+            orderbook: object::uid_to_inner(&orderbook.id),
+            id: entryID,
+            timestamp_ms: clock::timestamp_ms(clock),
+            is_bid: false,
+            account: tx_context::sender(ctx),
+            is_limit: true,
+        });
     }
 
   fun remove_order<T>(entries: &mut vector<Entry>, entryID: ID, asset: &mut Table<address, Balance<T>>, ctx: &mut TxContext, limits: &mut Table<u64, Limit>) {
@@ -205,9 +274,6 @@ module orderbookmodule::orders {
             };
     }
 
- 
-
-
     fun borrow_mut_account_balance<T>(
         asset: &mut Table<address, Balance<T>>,
         user: address,
@@ -256,14 +322,14 @@ module orderbookmodule::orders {
     }
 
    
-    fun add_bid_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderbook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, clock: &Clock, ctx: &mut TxContext) {
+    fun add_bid_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderbook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, clock: &Clock, price: u64, ctx: &mut TxContext) {
         add_order(&mut orderbook.bids, &mut orderbook.bid_limits, limit, is_by_side, order, clock, ctx);
-        match(orderbook, ctx);
+        match(orderbook, clock, price, ctx);
     }
 
-    fun add_ask_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderbook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, clock: &Clock, ctx: &mut TxContext) {
+    fun add_ask_order_to_orderbook<AssetA, AssetB>(order: Order, limit: Limit, orderbook: &mut Orderbook<AssetA, AssetB>,is_by_side: bool, clock: &Clock, price: u64, ctx: &mut TxContext) {
         add_order(&mut orderbook.asks, &mut orderbook.ask_limits, limit, is_by_side, order, clock, ctx);
-        match(orderbook, ctx);
+        match(orderbook, clock, price, ctx);
     }
 
     fun add_order(entries: &mut vector<Entry>, limits: &mut Table<u64, Limit>, limit: Limit, is_by_side: bool, order: Order, clock: &Clock,ctx: &mut TxContext) {
@@ -310,12 +376,19 @@ module orderbookmodule::orders {
         };
     }
 
-    fun transfer_all<T>(asset_transfer: &mut VecMap<address, Balance<T>>, ctx: &mut TxContext) {
+    fun transfer_all<T>(asset_transfer: &mut VecMap<address, Balance<T>>, is_bid: bool, clock: &Clock, price: u64, orderbook_id: &UID, ctx: &mut TxContext) {
         let x = 0;
-        let asset_a_len = vec_map::size(asset_transfer);
-        while(x < asset_a_len) {
+        let asset_len = vec_map::size(asset_transfer);
+        while(x < asset_len) {
             let (recepient, asset_to_transfer) = vec_map::pop(asset_transfer);
-                
+            let amount = balance::value(&asset_to_transfer);
+            event::emit(OrderMatchedEvent {
+                orderbook: object::uid_to_inner(orderbook_id),
+                is_bid,
+                timestamp_ms: clock::timestamp_ms(clock),
+                price,
+                amount,
+            });
             public_transfer(coin::from_balance<T>(asset_to_transfer, ctx), recepient);
             x = x + 1;
         }; 
@@ -393,7 +466,7 @@ module orderbookmodule::orders {
         get_idx_opt<Entry>(entries, option::borrow(&parent_bid_limit.head))
     }
 
-    fun match<AssetA, AssetB>(orderbook: &mut Orderbook<AssetA, AssetB>, ctx: &mut TxContext) {
+    fun match<AssetA, AssetB>(orderbook: &mut Orderbook<AssetA, AssetB>, clock: &Clock, price: u64, ctx: &mut TxContext) {
         sort_vec(&mut orderbook.asks);
         sort_vec(&mut orderbook.bids);
         vector::reverse(&mut orderbook.bids);
@@ -495,8 +568,8 @@ module orderbookmodule::orders {
                 }
             };    
 
-            transfer_all<AssetA>(&mut orderbook.asset_a_tmp, ctx);
-            transfer_all<AssetB>(&mut orderbook.asset_b_tmp, ctx);
+            transfer_all<AssetA>(&mut orderbook.asset_a_tmp, false, clock, price, &orderbook.id, ctx);
+            transfer_all<AssetB>(&mut orderbook.asset_b_tmp, true, clock, price, &orderbook.id, ctx);
         };
         
         let bid_limits_vec = vec_set::empty<u64>();
