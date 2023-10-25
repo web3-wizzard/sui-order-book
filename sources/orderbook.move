@@ -979,12 +979,13 @@ module orderbookmodule::orders_tests {
         next_tx(test, theguy);
 
         {
-        let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
+            let clock = clock::create_for_testing(ctx(test));
+            let (orderbook_entry_id, _parent_limit,_next,_prev,_price,_init_quantity,_cur_quantity,_user) = orders::get_bid_order_info(&orderbook, 0);
+            orders::remove_bid_order(orderbook_entry_id, &mut orderbook, &clock, ctx(test));
         
-        let (orderbook_entry_id, _parent_limit,_next,_prev,_price,_init_quantity,_cur_quantity,_user) = orders::get_bid_order_info(&orderbook, 0);
-        orders::remove_bid_order(orderbook_entry_id, &mut orderbook, ctx(test));
-       
-        test::return_shared(orderbook);
+            clock::destroy_for_testing(clock);
+            test::return_shared(orderbook);
         };
 
          next_tx(test, theguy);
@@ -1061,11 +1062,12 @@ module orderbookmodule::orders_tests {
         next_tx(test, thegirl);
 
         {
+        let clock = clock::create_for_testing(ctx(test));
         let orderbook = test::take_shared<Orderbook<ASSET_A, ASSET_B>>(test);
         
         let (orderbook_entry_id, _parent_limit,_next,_prev,_price,_init_quantity,_cur_quantity,_user) = orders::get_ask_order_info(&orderbook, 0);
-        orders::remove_ask_order(orderbook_entry_id, &mut orderbook, ctx(test));
-       
+        orders::remove_ask_order(orderbook_entry_id, &mut orderbook, &clock, ctx(test));
+        clock::destroy_for_testing(clock);
         test::return_shared(orderbook);
         };
 
