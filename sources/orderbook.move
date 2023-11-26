@@ -190,7 +190,7 @@ module orderbookmodule::orders {
          let ob_entry_idx = get_idx_opt<Entry>(entries, &entryID);
 
         if(option::is_none(&ob_entry_idx)) {
-            // throw error
+            assert!(&1 == &2, 999);
         };
     
         deal_with_location_of_removable_orderboor_entry(entries, ob_entry_idx);
@@ -198,7 +198,7 @@ module orderbookmodule::orders {
         let entry = vector::borrow(entries, *option::borrow(&ob_entry_idx));
 
         if(&entry.current.user != &tx_context::sender(ctx)) {
-            // return error
+             assert!(&1 == &2, 999);
         };
 
         deal_with_limit(limits, entry);
@@ -492,6 +492,10 @@ module orderbookmodule::orders {
             while(option::is_some(&curr_bid_idx) && option::is_some(&curr_ask_idx)) {
                 let curr_bid = vector::borrow_mut(&mut orderbook.bids, *option::borrow(&curr_bid_idx));
                 let curr_ask = vector::borrow_mut(&mut orderbook.asks, *option::borrow(&curr_ask_idx));
+                debug::print(table::borrow(&mut orderbook.asset_a, curr_ask.current.user));
+                if(curr_ask.current.cur_quantity == 0 || curr_bid.current.cur_quantity == 0) {
+                    continue
+                };
 
                 let ask_quintity_in_bid_value = 0;
 
@@ -500,6 +504,8 @@ module orderbookmodule::orders {
                 } else {
                      ask_quintity_in_bid_value = curr_ask.current.cur_quantity * curr_ask.current.price / 1_000_000_000;
                 };
+                debug::print(&ask_quintity_in_bid_value);
+                assert!(&ask_quintity_in_bid_value != &0, 999);
 
                 // debug::print(&11111);
                 // debug::print(&curr_bid.current.cur_quantity);
@@ -509,10 +515,13 @@ module orderbookmodule::orders {
                 // debug::print(&11112);
 
                 if(curr_bid.current.cur_quantity == ask_quintity_in_bid_value) {
+                    debug::print(&11);
+                    
                     let bidder_b_wallet = table::borrow_mut(&mut orderbook.asset_b, curr_bid.current.user);
+                      
                     let bidder_b_asset = ask_quintity_in_bid_value; 
                     let asker_a_wallet = table::borrow_mut(&mut orderbook.asset_a, curr_ask.current.user);
-
+                  
                     assert!(balance::value(bidder_b_wallet) >= bidder_b_asset && balance::value(asker_a_wallet) >= curr_ask.current.cur_quantity, 123);
                     join_balance_or_insert<AssetB>(&mut orderbook.asset_b_tmp, curr_ask.current.user, balance::split(bidder_b_wallet, bidder_b_asset));
                     join_balance_or_insert<AssetA>(&mut orderbook.asset_a_tmp, curr_bid.current.user, balance::split(asker_a_wallet, curr_ask.current.cur_quantity));
@@ -527,6 +536,7 @@ module orderbookmodule::orders {
                 } else if(
                     curr_bid.current.cur_quantity > ask_quintity_in_bid_value
                 ) {  
+                    debug::print(&22);
                     let bidder_b_wallet = table::borrow_mut(&mut orderbook.asset_b, curr_bid.current.user);
                     let bidder_b_asset = ask_quintity_in_bid_value;
                     let asker_a_wallet = table::borrow_mut(&mut orderbook.asset_a, curr_ask.current.user);
@@ -541,9 +551,11 @@ module orderbookmodule::orders {
 
                     asks_count = asks_count + 1;
                 } else {
+                    debug::print(&33);
                     let bidder_b_wallet = table::borrow_mut(&mut orderbook.asset_b, curr_bid.current.user);
                     
                     let bidder_b_asset = curr_bid.current.cur_quantity / 1_000_00 * curr_ask.current.price / curr_bid.current.price * 1_000_00; // todo make sure that 5 zeroes always exist and need to check that result of dividing not equal zero
+                    assert!(&bidder_b_asset != &0, 999);
                     
                     let asker_a_wallet = table::borrow_mut(&mut orderbook.asset_a, curr_ask.current.user);
                     
@@ -554,7 +566,8 @@ module orderbookmodule::orders {
                     } else {
                         ask_value_in_bid_quantity = curr_bid.current.cur_quantity * 1_000_000_000 / curr_bid.current.price;
                     };
-                   
+
+                    assert!(&ask_value_in_bid_quantity != &0, 999);
                     assert!(balance::value(bidder_b_wallet) >= curr_bid.current.cur_quantity &&  balance::value(asker_a_wallet) >= ask_value_in_bid_quantity, 125);
                     
                     let asset_b_to_change = balance::split(bidder_b_wallet, bidder_b_asset);
